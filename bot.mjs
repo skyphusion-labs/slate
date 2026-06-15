@@ -76,6 +76,7 @@ const CFG = {
   ollamaBase:           process.env.OLLAMA_BASE_URL         ?? 'http://wendy.internal:11434/v1',
   model:                process.env.DISCORD_MODEL           ?? 'qwen3.6:27b-ctx8k',
   channelIds:           new Set((process.env.DISCORD_CHANNEL_IDS ?? '').split(',').filter(Boolean)),
+  trustedBots:          new Set((process.env.TRUSTED_BOT_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
   historyLen:           parseInt(process.env.DISCORD_HISTORY ?? '20', 10),
   vivijureUrl:          process.env.VIVIJURE_API_URL        ?? '',
   llmUrl:               process.env.LLM_API_URL             ?? 'https://play.skyphusion.org',
@@ -1011,7 +1012,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // ---------------------------------------------------------------------------
 
 client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot) return;
+  // Never react to our own messages (hard loop guard). Ignore other bots EXCEPT trusted crew
+  // bots (TRUSTED_BOT_IDS) so a crew bot can drive Slate to test renders + chat. NOTE: a driving
+  // bot must not auto-reply to Slate's own replies, or the two ping-pong -- that loop-safety lives
+  // on the driver's side; Slate only opens the gate to known ids.
+  if (message.author.id === client.user.id) return;
+  if (message.author.bot && !CFG.trustedBots.has(message.author.id)) return;
 
   const isDM         = !message.guild;
   const isMentioned  = message.mentions.has(client.user);
