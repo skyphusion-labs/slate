@@ -54,12 +54,40 @@ import { appendFileSync } from 'node:fs';
 // Logging
 // ---------------------------------------------------------------------------
 
-const LOG_FILE = process.env.DISCORD_LOG ?? '';
+const LOG_FILE       = process.env.DISCORD_LOG    ?? '';
+const LOG_WORKER_URL = process.env.LOG_WORKER_URL ?? '';
+const LOG_SECRET     = process.env.LOG_SECRET     ?? '';
+const LOG_SERVICE    = process.env.LOG_SERVICE    ?? 'slate';
+
+// Best-effort log shipping to the R2-backed log-worker. Lines buffer and flush
+// on a timer (or when the buffer fills); failures are dropped, never thrown,
+// and never routed back through log() (which would loop).
+const logBuffer = [];
+
+async function flushLogs() {
+  if (!LOG_WORKER_URL || !LOG_SECRET || logBuffer.length === 0) return;
+  const batch = logBuffer.splice(0, logBuffer.length).join('\n') + '\n';
+  try {
+    await fetch(`${LOG_WORKER_URL}/ingest?service=${encodeURIComponent(LOG_SERVICE)}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'text/plain', 'X-Log-Secret': LOG_SECRET },
+      body:    batch,
+    });
+  } catch (e) {
+    console.error(`[log-ship] failed: ${e.message}`);
+  }
+}
+
+if (LOG_WORKER_URL && LOG_SECRET) setInterval(flushLogs, 10_000);
 
 function log(...args) {
   const line = `[${new Date().toISOString()}] ${args.join(' ')}`;
   console.log(line);
   if (LOG_FILE) try { appendFileSync(LOG_FILE, line + '\n'); } catch {}
+  if (LOG_WORKER_URL && LOG_SECRET) {
+    logBuffer.push(line);
+    if (logBuffer.length >= 100) flushLogs();
+  }
 }
 
 if (!process.env.DISCORD_TOKEN) {
