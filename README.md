@@ -172,6 +172,23 @@ Image attachments are degraded to a text placeholder in ollama mode (most ollama
 
 ---
 
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development
+setup, code style (no em-dashes; minimal dependencies), and the PR workflow. Security reports go
+through [SECURITY.md](SECURITY.md), not public issues. Release notes live in
+[CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## Using Slate (Terms & Privacy)
+
+Slate is a Discord application that reads message content in the channels it joins. By using it you
+agree to the [Terms of Service](TERMS.md); how it handles your data (and the third-party services
+involved) is described in the [Privacy Policy](PRIVACY.md).
+
+---
+
 ## License
 
 AGPL-3.0. See [LICENSE](LICENSE).
