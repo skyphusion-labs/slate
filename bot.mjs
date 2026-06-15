@@ -675,6 +675,19 @@ async function submitToVivijure(brief, quality) {
       };
     }
   }
+  // Only slots with a real ref (cast member with a synced portrait) can be referenced; the bundle
+  // rejects a use_characters / scene slot that has no characterRefs entry. Drop the rest so a
+  // character without a generated portrait degrades gracefully instead of 400-ing the whole render.
+  const refSlots = new Set(Object.keys(characterRefs));
+  const sceneSlots = (slots) => (slots ?? []).filter(slot => refSlots.has(slot));
+
+  // The pod's bg-pass feeds scene prompts to SDXL verbatim; CLIP truncates at 77 tokens, so the
+  // API caps scene prompts at 50 words (after triggers + style_prefix). Clamp here so a verbose
+  // brief never fails the submit (mirrors the style_prefix slice above).
+  const clampPrompt = (text) => {
+    const words = (text ?? '').trim().split(/\s+/).filter(Boolean);
+    return words.length > 50 ? words.slice(0, 50).join(' ') : (text ?? '');
+  };
 
   const storyboard = {
     title:            brief.title ?? 'Untitled',
@@ -683,10 +696,10 @@ async function submitToVivijure(brief, quality) {
     style_category:   brief.style_category ?? 'None',
     duration_seconds: brief.duration_seconds ?? undefined,
     clip_seconds:     brief.clip_seconds ?? undefined,
-    use_characters:   [...new Set(brief.scenes.flatMap(s => s.character_slots))],
+    use_characters:   [...new Set(brief.scenes.flatMap(s => sceneSlots(s.character_slots)))],
     scenes:           brief.scenes.map(s => ({
-      id: s.id, prompt: s.prompt, act: s.act ?? undefined,
-      character_slots: s.character_slots, target_seconds: s.target_seconds ?? undefined,
+      id: s.id, prompt: clampPrompt(s.prompt), act: s.act ?? undefined,
+      character_slots: sceneSlots(s.character_slots), target_seconds: s.target_seconds ?? undefined,
     })),
   };
 
@@ -711,7 +724,7 @@ async function submitToVivijure(brief, quality) {
       bundle_key: bundleKey,
       scenes: brief.scenes.map(s => ({
         shot_id: s.id,
-        prompt:  s.prompt,
+        prompt:  clampPrompt(s.prompt),
         seconds: s.target_seconds ?? brief.clip_seconds ?? 5,
       })),
       keyframe_config: { quality_tier: quality },
