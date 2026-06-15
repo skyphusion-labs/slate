@@ -455,8 +455,9 @@ Schema to return:
       if (!existing.portraitUrl && !existing.castId) continue;
       const m2 = updated.cast?.find(c => c.slot === existing.slot);
       if (!m2) continue;
-      if (existing.portraitUrl && !m2.portraitUrl) m2.portraitUrl = existing.portraitUrl;
-      if (existing.castId     && !m2.castId)      m2.castId      = existing.castId;
+      if (existing.portraitUrl  && !m2.portraitUrl)  m2.portraitUrl  = existing.portraitUrl;
+      if (existing.castId      && !m2.castId)       m2.castId       = existing.castId;
+      if (existing.portraitKey && !m2.portraitKey)  m2.portraitKey  = existing.portraitKey;
     }
 
     // Save previous brief for !undo
@@ -604,9 +605,9 @@ async function uploadPortrait(castId, buffer, mime) {
   const portraitRes = await fetch(`${CFG.vivijureUrl}/api/cast/${castId}/portrait`, {
     method: 'POST', headers: vivijureHeaders(), body: JSON.stringify({ key, mime }),
   });
-  if (!portraitRes.ok) { log(`[cast] portrait register failed ${portraitRes.status}`); return false; }
+  if (!portraitRes.ok) { log(`[cast] portrait register failed ${portraitRes.status}`); return null; }
   log(`[cast] portrait uploaded + registered for ${castId} (key: ${key})`);
-  return true;
+  return key;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,7 +622,13 @@ async function submitToVivijure(brief, quality) {
   const accessHeaders = { 'CF-Access-Client-Id': CFG.cfAccessClientId, 'CF-Access-Client-Secret': CFG.cfAccessClientSecret };
   const characterRefs = {};
   for (const c of brief.cast) {
-    if (c.portraitUrl) characterRefs[c.slot] = [c.portraitUrl];
+    if (c.castId && c.portraitKey) {
+      characterRefs[c.slot] = {
+        name:           c.name,
+        portrait:       { key: c.portraitKey },
+        trainingImages: [{ key: c.portraitKey }],
+      };
+    }
   }
 
   const storyboard = {
@@ -894,7 +901,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const vivCast = await syncCastMember(castEntry).catch(e => { log(`[cast] ${e.message}`); return null; });
         if (vivCast) {
           castEntry.castId = vivCast.id;
-          await uploadPortrait(vivCast.id, result.buffer, result.mime).catch(() => {});
+          const pKey = await uploadPortrait(vivCast.id, result.buffer, result.mime).catch(() => null);
+          if (pKey) castEntry.portraitKey = pKey;
         }
         await saveProject(channelId);
 
@@ -1103,7 +1111,8 @@ client.on(Events.MessageCreate, async (message) => {
     const vivCast = await syncCastMember(castEntry).catch(e => { log(`[cast] ${e.message}`); return null; });
     if (vivCast) {
       castEntry.castId = vivCast.id;
-      await uploadPortrait(vivCast.id, result.buffer, result.mime).catch(() => {});
+      const pKey = await uploadPortrait(vivCast.id, result.buffer, result.mime).catch(() => null);
+      if (pKey) castEntry.portraitKey = pKey;
     }
     await saveProject(channelId);
 
