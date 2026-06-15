@@ -136,14 +136,19 @@ function isSsrfSafe(raw: string): boolean {
     ) return false;
   }
 
-  // Literal IPv6 (URL hostname strips brackets)
-  if (
-    host === "::" || host === "::1"  ||  // unspecified / loopback
-    host.startsWith("::ffff:")        ||  // IPv4-mapped (::ffff:7f00:1, ::ffff:127.0.0.1, etc.)
-    host.startsWith("fe80:")          ||  // link-local
-    host.startsWith("fc")             ||  // unique local fc00::/7
-    host.startsWith("fd")                 // unique local fd00::/8
-  ) return false;
+  // Literal IPv6: URL.hostname KEEPS the brackets ("[::1]"), so strip them before matching --
+  // otherwise none of these checks ever fire (the original bug let [::1] / [fe80::1] / [fc00::1] /
+  // [::ffff:169.254.169.254] through). Scoping to the bracketed literal also avoids false-positives
+  // on real domains like fconline.com / fd-cdn.com.
+  if (host.startsWith("[") && host.endsWith("]")) {
+    const h6 = host.slice(1, -1);
+    if (
+      h6 === "::" || h6 === "::1"                 ||  // unspecified / loopback
+      h6.startsWith("::ffff:")                    ||  // IPv4-mapped (covers mapped loopback/metadata)
+      h6.startsWith("fe80:")                      ||  // link-local
+      h6.startsWith("fc") || h6.startsWith("fd")      // unique local fc00::/7
+    ) return false;
+  }
 
   return true;
 }
