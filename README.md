@@ -6,6 +6,39 @@
 
 ---
 
+## Slate in action
+
+The screenshots below are a real planning session: Slate and a crew test bot
+collaborating in a Discord channel to design a short film from a one-line pitch.
+
+**Conversational planning + character portraits** -- Slate develops the cast, then
+generates a portrait on command and syncs it to the Vivijure Cast:
+
+![Slate planning a film and generating a character portrait](assets/showcase-planning.jpg)
+
+**Structured storyboard, maintained in the background** -- while everyone talks,
+Slate keeps a machine-readable brief (title, logline, style, cast, scenes) and
+shows it on `!brief`:
+
+![The storyboard brief Slate maintains](assets/showcase-brief.jpg)
+
+### What it produced: "ECHO"
+
+From that conversation, Slate assembled the storyboard bundle and submitted it to
+the [Vivijure](https://vivijure.skyphusion.org) render pipeline (SDXL keyframes +
+image-to-video, assembled to a 1080p film). The character portrait carries through
+as a reference so the detective stays consistent into motion.
+
+| The City | The Data Trail | The Absence |
+|---|---|---|
+| ![Scene 1](assets/showcase-city.jpg) | ![Scene 2](assets/showcase-datatrail.jpg) | ![Scene 3](assets/showcase-absence.jpg) |
+| Detective Chen Kai in a rain-drenched neon alley | His cybernetic eye activating, data streams swirling | Echo's empty chair, present only as afterimage |
+
+A draft-tier render planned entirely through conversation -- atmospheric, on-theme,
+and coherent across the three-scene arc.
+
+---
+
 ## Features
 
 - **Conversational film planning** -- natural multi-person discussion in a Discord channel; Slate participates as a creative collaborator and silently maintains a structured storyboard brief in the background
