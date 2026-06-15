@@ -1,7 +1,9 @@
 name: CI
 
-# Lint the bot and typecheck the search Worker on every push and PR.
-# Runs on the skyphusion-labs fleet self-hosted runner (no Actions-minute cost).
+# PR + push checks run on GitHub-hosted runners: free for public repos and fully
+# isolated, so fork PRs never touch the self-hosted infrastructure. The dischord
+# self-hosted runner ([self-hosted, linux, x64]) is reserved for trusted,
+# main-only deploy jobs (added separately).
 on:
   push:
     branches: [main]
@@ -18,11 +20,14 @@ concurrency:
 
 jobs:
   ci:
-    runs-on: [self-hosted, fleet]
-    container: node:24-alpine
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       # bot.mjs is dependency-free at parse time; a syntax check is the gate.
       - name: Lint bot
