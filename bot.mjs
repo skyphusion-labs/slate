@@ -648,25 +648,42 @@ async function submitToVivijure(brief, quality) {
   }
   const { bundleKey } = await bundleRes.json();
 
-  const renderRes = await fetch(`${CFG.vivijureUrl}/api/storyboard/render`, {
+  // Staged module-host pipeline (keyframe -> clips -> finish -> assemble). Send just the bundle
+  // (the studio derives `project` from bundle_key) plus the scenes; the quality tier rides
+  // keyframe_config. finish-rife is held off (interpolate / face_restore disabled) until
+  // vivijure-backend#76 lands -- disabled, it no-ops synchronously, so films still complete via
+  // keyframe -> clips -> assemble. Flip it on once #76 is fixed.
+  const filmRes = await fetch(`${CFG.vivijureUrl}/api/render/film`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...accessHeaders },
-    body: JSON.stringify({ bundleKey, quality_tier: quality }),
+    body: JSON.stringify({
+      bundle_key: bundleKey,
+      scenes: brief.scenes.map(s => ({
+        shot_id: s.id,
+        prompt:  s.prompt,
+        seconds: s.target_seconds ?? brief.clip_seconds ?? 5,
+      })),
+      keyframe_config: { quality_tier: quality },
+      finish_config:   { 'finish-rife': { interpolate: false, face_restore: 'none' } },
+    }),
   });
-  if (!renderRes.ok) {
-    const body = await renderRes.text().catch(() => '');
-    return { ok: false, error: `render failed ${renderRes.status}: ${body}` };
+  if (!filmRes.ok) {
+    const body = await filmRes.text().catch(() => '');
+    return { ok: false, error: `film submit failed ${filmRes.status}: ${body}` };
   }
-  const job = await renderRes.json();
-  return { ok: true, jobId: job.jobId, status: job.status };
+  const film = await filmRes.json();
+  return { ok: true, jobId: film.film_id, status: film.phase };
 }
 
 async function checkRenderStatus(jobId) {
   if (!CFG.vivijureUrl) return null;
-  const res = await fetch(`${CFG.vivijureUrl}/api/storyboard/render/${jobId}`, {
+  const res = await fetch(`${CFG.vivijureUrl}/api/render/film/${jobId}`, {
     headers: { 'CF-Access-Client-Id': CFG.cfAccessClientId, 'CF-Access-Client-Secret': CFG.cfAccessClientSecret },
   });
   if (!res.ok) return null;
-  return res.json();
+  const j = await res.json();
+  // The staged pipeline reports `phase` (done / failed / ...) and a presigned `download_url`
+  // once done; normalize to the { status, download_url } shape the poll loop already understands.
+  return { ...j, status: j.phase };
 }
 
 // In-memory pending render map (populated from D1 on startup; survives bot restarts via D1).
