@@ -54,7 +54,21 @@ the last warm place on Earth:
 | ![Scene 1](assets/showcase-ember-greenhouse.jpg) | ![Scene 2](assets/showcase-ember-threshold.jpg) | ![Scene 3](assets/showcase-ember-firstlight.jpg) |
 | The last seedling, cradled under glass | Wren carries the lantern through the frozen ghost city | The flower blooms as real sunlight returns |
 
-Two films, two genres, same flow: conversation in, finished film out.
+### A third film: "RUST"
+
+A two-character short, and the end-to-end proof of the self-hosted render path: a salvage robot
+gives its last charge to wake the companion it spent years rebuilding. Slate developed both
+characters, and both portraits carried through as references into the motion.
+
+| The Junkyard | The Last Charge | Dawn |
+|---|---|---|
+| ![Scene 1](assets/showcase-rust-junkyard.jpg) | ![Scene 2](assets/showcase-rust-charge.jpg) | ![Scene 3](assets/showcase-rust-dawn.jpg) |
+| The salvage robot works amid sparks | Its amber eye dims as the companion's blue eyes wake | Dawn: the maker dark and still, the little one looking back |
+
+RUST was rendered entirely on our own GPU and finished on our own hardware, reached privately over
+a Cloudflare Workers VPC link -- planned by conversation, rendered and delivered in-house.
+
+Three films, three genres, same flow: conversation in, finished film out.
 
 ---
 
