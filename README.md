@@ -37,6 +37,25 @@ as a reference so the detective stays consistent into motion.
 A draft-tier render planned entirely through conversation -- atmospheric, on-theme,
 and coherent across the three-scene arc.
 
+### A second film: "EMBER"
+
+Not a one-off. A different session, a different genre -- warm light against a dying
+world. Slate genuinely collaborated: pitched the premise, its instinct was *"don't
+open on the catastrophe, open on the flower,"* and it locked a clean brief before a
+single frame was rendered:
+
+![Slate locking the EMBER brief](assets/showcase-ember-plan.jpg)
+
+The result -- a botanist carrying the last living flower through a frozen city toward
+the last warm place on Earth:
+
+| The Greenhouse | The Threshold | The First Light |
+|---|---|---|
+| ![Scene 1](assets/showcase-ember-greenhouse.jpg) | ![Scene 2](assets/showcase-ember-threshold.jpg) | ![Scene 3](assets/showcase-ember-firstlight.jpg) |
+| The last seedling, cradled under glass | Wren carries the lantern through the frozen ghost city | The flower blooms as real sunlight returns |
+
+Two films, two genres, same flow: conversation in, finished film out.
+
 ---
 
 ## Features
