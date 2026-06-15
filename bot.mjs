@@ -635,7 +635,7 @@ async function submitToVivijure(brief, quality) {
   const storyboard = {
     title:            brief.title ?? 'Untitled',
     full_prompt:      brief.full_prompt  ?? undefined,
-    style_prefix:     brief.style_prefix ?? undefined,
+    style_prefix:     brief.style_prefix ? brief.style_prefix.slice(0, 256) : undefined,
     style_category:   brief.style_category ?? 'None',
     duration_seconds: brief.duration_seconds ?? undefined,
     clip_seconds:     brief.clip_seconds ?? undefined,
@@ -1166,7 +1166,15 @@ client.on(Events.MessageCreate, async (message) => {
       '...'
     ).catch(() => {});
 
-    const result = await submitToVivijure(project.brief, quality);
+    let result;
+    try {
+      result = await submitToVivijure(project.brief, quality);
+    } catch (e) {
+      log(`[render] submitToVivijure threw: ${e.message}`);
+      await message.reply(`Render submission errored: ${e.message}`).catch(() => {});
+      return;
+    }
+    log(`[render] result: ${JSON.stringify(result).slice(0, 200)}`);
     if (result.ok) {
       pendingRenders.set(result.jobId, { channelId, quality });
       await d1Query(
@@ -1175,8 +1183,10 @@ client.on(Events.MessageCreate, async (message) => {
       ).catch(() => {});
       await message.reply(`Render submitted! Job \`${result.jobId}\` -- I'll let you know when it's done.`).catch(() => {});
     } else {
-      const json = '```json\n' + JSON.stringify(project.brief, null, 2).slice(0, 1800) + '\n```';
-      await message.reply(`Render submission failed: ${result.error}\n\nStoryboard JSON:\n${json}`).catch(() => {});
+      const json = '```json\n' + JSON.stringify(project.brief, null, 2).slice(0, 1400) + '\n```';
+      for (const chunk of splitMessage(`Render submission failed: ${result.error}\n\nStoryboard JSON:\n${json}`)) {
+        await message.reply(chunk).catch(() => {});
+      }
     }
     return;
   }
