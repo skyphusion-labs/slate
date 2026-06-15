@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Slate -- Vivijure Screenwriter's Assistant for Discord",
   "scripts": {
-    "bot": "node bot.mjs"
+    "bot": "node bot.mjs",
+    "lint": "node --check bot.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.55",

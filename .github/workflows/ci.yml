@@ -1,0 +1,37 @@
+name: CI
+
+# Lint the bot and typecheck the search Worker on every push and PR.
+# Runs on the skyphusion-labs fleet self-hosted runner (no Actions-minute cost).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: [self-hosted, fleet]
+    container: node:24-alpine
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      # bot.mjs is dependency-free at parse time; a syntax check is the gate.
+      - name: Lint bot
+        run: node --check bot.mjs
+
+      - name: Install search-worker deps
+        working-directory: search-worker
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck search-worker
+        working-directory: search-worker
+        run: npm run typecheck
