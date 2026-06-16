@@ -1,0 +1,42 @@
+name: CI
+
+# PR + push checks run on GitHub-hosted runners: free for public repos and fully
+# isolated, so fork PRs never touch the self-hosted infrastructure. The dischord
+# self-hosted runner ([self-hosted, linux, x64]) is reserved for trusted,
+# main-only deploy jobs (added separately).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # bot.mjs is dependency-free at parse time; a syntax check is the gate.
+      - name: Lint bot
+        run: node --check bot.mjs
+
+      - name: Install search-worker deps
+        working-directory: search-worker
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck search-worker
+        working-directory: search-worker
+        run: npm run typecheck

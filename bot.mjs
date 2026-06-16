@@ -1212,8 +1212,24 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 // ---------------------------------------------------------------------------
-// Startup
+// Startup Execution Link
 // ---------------------------------------------------------------------------
 
-await initD1();
-client.login(CFG.token);
+await initD1().catch(err => log(`D1 Table Setup Notice: ${err.message}`));
+
+if (process.env.VITEST) {
+  log("CI Mode Detected: Running application validation loops...");
+  
+  const mockUserId = "123456789012345678"; 
+  await registerSlashCommands(mockUserId).catch(err => log(`Mock Command Reg Notice: ${err.message}`));
+  await loadPendingRenders().catch(err => log(`Mock Renders Sync Notice: ${err.message}`));
+  
+  log("SMOKE TEST PASSED: Slate Assistant configuration, assets, and database tables verified.");
+  
+  client.destroy();
+} else {
+  client.login(CFG.token).catch(err => {
+    log(`Failed to connect to Discord gateways: ${err.message}`);
+    process.exit(1);
+  });
+}

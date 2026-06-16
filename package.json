@@ -13,5 +13,9 @@
   },
   "engines": {
     "node": ">=24"
+  },
+  "devDependencies": {
+    "@vitest/coverage-istanbul": "^4.1.9",
+    "vitest": "^4.1.9"
   }
 }

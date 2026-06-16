@@ -1,0 +1,54 @@
+name: Test and Native Code Coverage
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  push:
+    branches: [ main, master ]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write      
+      code-quality: write    
+      pull-requests: write   
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install Root Dependencies
+        run: npm ci
+
+      - name: Start Local Log Worker microservice
+        run: |
+          cd log-worker && npm install
+          npx wrangler dev --port 8787 &
+
+      - name: Start Local Search Worker microservice
+        run: |
+          cd search-worker && npm install
+          npx wrangler dev --port 8788 &
+
+      - name: Wait for Mesh Workers to be ready
+        run: |
+          echo "Waiting for background workers to settle..."
+          timeout 30s bash -c 'until lsof -i :8787 -s TCP:LISTEN && lsof -i :8788 -s TCP:LISTEN; do sleep 1; done' || true
+
+      - name: Run Bot Smoke Test with Coverage
+        run: npx vitest run --coverage.enabled=true --coverage.provider=istanbul --coverage.reporter=cobertura --teardownTimeout=1
+
+      - name: Upload coverage report
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: ./coverage/cobertura-coverage.xml
+          language: javascript
