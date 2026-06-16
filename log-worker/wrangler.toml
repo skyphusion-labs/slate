@@ -1,0 +1,11 @@
+name = "slate-logs"
+main = "src/index.ts"
+compatibility_date = "2025-06-14"
+compatibility_flags = ["nodejs_compat"]
+
+[[r2_buckets]]
+binding = "LOGS"
+bucket_name = "slate-logs"
+
+# Secrets (set via: wrangler secret put <NAME>)
+#   LOG_SECRET    shared token services send in X-Log-Secret

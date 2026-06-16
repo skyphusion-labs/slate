@@ -6,6 +6,72 @@
 
 ---
 
+## Slate in action
+
+The screenshots below are a real planning session: Slate and a crew test bot
+collaborating in a Discord channel to design a short film from a one-line pitch.
+
+**Conversational planning + character portraits** -- Slate develops the cast, then
+generates a portrait on command and syncs it to the Vivijure Cast:
+
+![Slate planning a film and generating a character portrait](assets/showcase-planning.jpg)
+
+**Structured storyboard, maintained in the background** -- while everyone talks,
+Slate keeps a machine-readable brief (title, logline, style, cast, scenes) and
+shows it on `!brief`:
+
+![The storyboard brief Slate maintains](assets/showcase-brief.jpg)
+
+### What it produced: "ECHO"
+
+From that conversation, Slate assembled the storyboard bundle and submitted it to
+the [Vivijure](https://vivijure.skyphusion.org) render pipeline (SDXL keyframes +
+image-to-video, assembled to a 1080p film). The character portrait carries through
+as a reference so the detective stays consistent into motion.
+
+| The City | The Data Trail | The Absence |
+|---|---|---|
+| ![Scene 1](assets/showcase-city.jpg) | ![Scene 2](assets/showcase-datatrail.jpg) | ![Scene 3](assets/showcase-absence.jpg) |
+| Detective Chen Kai in a rain-drenched neon alley | His cybernetic eye activating, data streams swirling | Echo's empty chair, present only as afterimage |
+
+A draft-tier render planned entirely through conversation -- atmospheric, on-theme,
+and coherent across the three-scene arc.
+
+### A second film: "EMBER"
+
+Not a one-off. A different session, a different genre -- warm light against a dying
+world. Slate genuinely collaborated: pitched the premise, its instinct was *"don't
+open on the catastrophe, open on the flower,"* and it locked a clean brief before a
+single frame was rendered:
+
+![Slate locking the EMBER brief](assets/showcase-ember-plan.jpg)
+
+The result -- a botanist carrying the last living flower through a frozen city toward
+the last warm place on Earth:
+
+| The Greenhouse | The Threshold | The First Light |
+|---|---|---|
+| ![Scene 1](assets/showcase-ember-greenhouse.jpg) | ![Scene 2](assets/showcase-ember-threshold.jpg) | ![Scene 3](assets/showcase-ember-firstlight.jpg) |
+| The last seedling, cradled under glass | Wren carries the lantern through the frozen ghost city | The flower blooms as real sunlight returns |
+
+### A third film: "RUST"
+
+A two-character short, and the end-to-end proof of the self-hosted render path: a salvage robot
+gives its last charge to wake the companion it spent years rebuilding. Slate developed both
+characters, and both portraits carried through as references into the motion.
+
+| The Junkyard | The Last Charge | Dawn |
+|---|---|---|
+| ![Scene 1](assets/showcase-rust-junkyard.jpg) | ![Scene 2](assets/showcase-rust-charge.jpg) | ![Scene 3](assets/showcase-rust-dawn.jpg) |
+| The salvage robot works amid sparks | Its amber eye dims as the companion's blue eyes wake | Dawn: the maker dark and still, the little one looking back |
+
+RUST was rendered entirely on our own GPU and finished on our own hardware, reached privately over
+a Cloudflare Workers VPC link -- planned by conversation, rendered and delivered in-house.
+
+Three films, three genres, same flow: conversation in, finished film out.
+
+---
+
 ## Features
 
 - **Conversational film planning** -- natural multi-person discussion in a Discord channel; Slate participates as a creative collaborator and silently maintains a structured storyboard brief in the background
@@ -169,6 +235,23 @@ Image attachments are degraded to a text placeholder in ollama mode (most ollama
 **Conrad Rockenhaus** ([SkyPhusion](https://github.com/SkyPhusion)) -- project creator, platform architect, Vivijure founder.
 
 **Claude Sonnet 4.6** (Anthropic) -- operating as *Strummer*, SkyPhusion's AI crew member. Designed and implemented the Slate architecture from an initial Discord-to-ollama relay: CF AI Gateway integration (native Anthropic SDK path), Anthropic tool-use loop, Brave + Tavily + CF Browser Rendering search pipeline, Cloudflare Vectorize knowledge base, Discord vision input, slash command system, D1 session persistence, render submission and polling, character portrait generation and Vivijure Cast sync, `!thumbnail`, `!undo`, and the `vivijure-search` Worker. This project is an example of the SkyPhusion AI-collaborative development model -- human vision, AI execution, shipped together.
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development
+setup, code style (no em-dashes; minimal dependencies), and the PR workflow. Security reports go
+through [SECURITY.md](SECURITY.md), not public issues. Release notes live in
+[CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## Using Slate (Terms & Privacy)
+
+Slate is a Discord application that reads message content in the channels it joins. By using it you
+agree to the [Terms of Service](TERMS.md); how it handles your data (and the third-party services
+involved) is described in the [Privacy Policy](PRIVACY.md).
 
 ---
 

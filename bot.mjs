@@ -54,12 +54,40 @@ import { appendFileSync } from 'node:fs';
 // Logging
 // ---------------------------------------------------------------------------
 
-const LOG_FILE = process.env.DISCORD_LOG ?? '';
+const LOG_FILE       = process.env.DISCORD_LOG    ?? '';
+const LOG_WORKER_URL = process.env.LOG_WORKER_URL ?? '';
+const LOG_SECRET     = process.env.LOG_SECRET     ?? '';
+const LOG_SERVICE    = process.env.LOG_SERVICE    ?? 'slate';
+
+// Best-effort log shipping to the R2-backed log-worker. Lines buffer and flush
+// on a timer (or when the buffer fills); failures are dropped, never thrown,
+// and never routed back through log() (which would loop).
+const logBuffer = [];
+
+async function flushLogs() {
+  if (!LOG_WORKER_URL || !LOG_SECRET || logBuffer.length === 0) return;
+  const batch = logBuffer.splice(0, logBuffer.length).join('\n') + '\n';
+  try {
+    await fetch(`${LOG_WORKER_URL}/ingest?service=${encodeURIComponent(LOG_SERVICE)}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'text/plain', 'X-Log-Secret': LOG_SECRET },
+      body:    batch,
+    });
+  } catch (e) {
+    console.error(`[log-ship] failed: ${e.message}`);
+  }
+}
+
+if (LOG_WORKER_URL && LOG_SECRET) setInterval(flushLogs, 10_000);
 
 function log(...args) {
   const line = `[${new Date().toISOString()}] ${args.join(' ')}`;
   console.log(line);
   if (LOG_FILE) try { appendFileSync(LOG_FILE, line + '\n'); } catch {}
+  if (LOG_WORKER_URL && LOG_SECRET) {
+    logBuffer.push(line);
+    if (logBuffer.length >= 100) flushLogs();
+  }
 }
 
 if (!process.env.DISCORD_TOKEN) {
@@ -76,6 +104,7 @@ const CFG = {
   ollamaBase:           process.env.OLLAMA_BASE_URL         ?? 'http://wendy.internal:11434/v1',
   model:                process.env.DISCORD_MODEL           ?? 'qwen3.6:27b-ctx8k',
   channelIds:           new Set((process.env.DISCORD_CHANNEL_IDS ?? '').split(',').filter(Boolean)),
+  trustedBots:          new Set((process.env.TRUSTED_BOT_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
   historyLen:           parseInt(process.env.DISCORD_HISTORY ?? '20', 10),
   vivijureUrl:          process.env.VIVIJURE_API_URL        ?? '',
   llmUrl:               process.env.LLM_API_URL             ?? 'https://play.skyphusion.org',
@@ -444,8 +473,24 @@ Schema to return:
   "scenes": [{ "id": string, "prompt": string, "act": string | null, "character_slots": string[], "target_seconds": number | null }]
 }`;
 
+  // Flatten the recent conversation into a single user message. Passing the raw
+  // history as alternating turns can end on an assistant message, which Claude
+  // rejects ("conversation must end with a user message"); a single user turn
+  // also sidesteps role-alternation and image-block issues during extraction.
+  const convoText = recentHistory
+    .filter(m => m.role !== 'system')
+    .map(m => {
+      const text = typeof m.content === 'string'
+        ? m.content
+        : (Array.isArray(m.content) ? m.content.filter(b => b.type === 'text').map(b => b.text).join('\n') : '');
+      return `${m.role === 'user' ? 'User' : 'Slate'}: ${text}`;
+    })
+    .join('\n\n');
+
   try {
-    const raw = await callAI(extractPrompt, recentHistory.filter(m => m.role !== 'system'));
+    const raw = await callAI(extractPrompt, [
+      { role: 'user', content: `Conversation so far:\n\n${convoText}\n\nReturn the updated storyboard brief as a single JSON object now.` },
+    ]);
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return;
     const updated = JSON.parse(match[0]);
@@ -455,8 +500,9 @@ Schema to return:
       if (!existing.portraitUrl && !existing.castId) continue;
       const m2 = updated.cast?.find(c => c.slot === existing.slot);
       if (!m2) continue;
-      if (existing.portraitUrl && !m2.portraitUrl) m2.portraitUrl = existing.portraitUrl;
-      if (existing.castId     && !m2.castId)      m2.castId      = existing.castId;
+      if (existing.portraitUrl  && !m2.portraitUrl)  m2.portraitUrl  = existing.portraitUrl;
+      if (existing.castId      && !m2.castId)       m2.castId       = existing.castId;
+      if (existing.portraitKey && !m2.portraitKey)  m2.portraitKey  = existing.portraitKey;
     }
 
     // Save previous brief for !undo
@@ -604,9 +650,9 @@ async function uploadPortrait(castId, buffer, mime) {
   const portraitRes = await fetch(`${CFG.vivijureUrl}/api/cast/${castId}/portrait`, {
     method: 'POST', headers: vivijureHeaders(), body: JSON.stringify({ key, mime }),
   });
-  if (!portraitRes.ok) { log(`[cast] portrait register failed ${portraitRes.status}`); return false; }
+  if (!portraitRes.ok) { log(`[cast] portrait register failed ${portraitRes.status}`); return null; }
   log(`[cast] portrait uploaded + registered for ${castId} (key: ${key})`);
-  return true;
+  return key;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,20 +667,39 @@ async function submitToVivijure(brief, quality) {
   const accessHeaders = { 'CF-Access-Client-Id': CFG.cfAccessClientId, 'CF-Access-Client-Secret': CFG.cfAccessClientSecret };
   const characterRefs = {};
   for (const c of brief.cast) {
-    if (c.portraitUrl) characterRefs[c.slot] = [c.portraitUrl];
+    if (c.castId && c.portraitKey) {
+      characterRefs[c.slot] = {
+        name:           c.name,
+        portrait:       { key: c.portraitKey },
+        trainingImages: [{ key: c.portraitKey }],
+      };
+    }
   }
+  // Only slots with a real ref (cast member with a synced portrait) can be referenced; the bundle
+  // rejects a use_characters / scene slot that has no characterRefs entry. Drop the rest so a
+  // character without a generated portrait degrades gracefully instead of 400-ing the whole render.
+  const refSlots = new Set(Object.keys(characterRefs));
+  const sceneSlots = (slots) => (slots ?? []).filter(slot => refSlots.has(slot));
+
+  // The pod's bg-pass feeds scene prompts to SDXL verbatim; CLIP truncates at 77 tokens, so the
+  // API caps scene prompts at 50 words (after triggers + style_prefix). Clamp here so a verbose
+  // brief never fails the submit (mirrors the style_prefix slice above).
+  const clampPrompt = (text) => {
+    const words = (text ?? '').trim().split(/\s+/).filter(Boolean);
+    return words.length > 50 ? words.slice(0, 50).join(' ') : (text ?? '');
+  };
 
   const storyboard = {
     title:            brief.title ?? 'Untitled',
     full_prompt:      brief.full_prompt  ?? undefined,
-    style_prefix:     brief.style_prefix ?? undefined,
+    style_prefix:     brief.style_prefix ? brief.style_prefix.slice(0, 256) : undefined,
     style_category:   brief.style_category ?? 'None',
     duration_seconds: brief.duration_seconds ?? undefined,
     clip_seconds:     brief.clip_seconds ?? undefined,
-    use_characters:   [...new Set(brief.scenes.flatMap(s => s.character_slots))],
+    use_characters:   [...new Set(brief.scenes.flatMap(s => sceneSlots(s.character_slots)))],
     scenes:           brief.scenes.map(s => ({
-      id: s.id, prompt: s.prompt, act: s.act ?? undefined,
-      character_slots: s.character_slots, target_seconds: s.target_seconds ?? undefined,
+      id: s.id, prompt: clampPrompt(s.prompt), act: s.act ?? undefined,
+      character_slots: sceneSlots(s.character_slots), target_seconds: s.target_seconds ?? undefined,
     })),
   };
 
@@ -648,25 +713,42 @@ async function submitToVivijure(brief, quality) {
   }
   const { bundleKey } = await bundleRes.json();
 
-  const renderRes = await fetch(`${CFG.vivijureUrl}/api/storyboard/render`, {
+  // Staged module-host pipeline (keyframe -> clips -> finish -> assemble). Send just the bundle
+  // (the studio derives `project` from bundle_key) plus the scenes; the quality tier rides
+  // keyframe_config. finish-rife is held off (interpolate / face_restore disabled) until
+  // vivijure-backend#76 lands -- disabled, it no-ops synchronously, so films still complete via
+  // keyframe -> clips -> assemble. Flip it on once #76 is fixed.
+  const filmRes = await fetch(`${CFG.vivijureUrl}/api/render/film`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...accessHeaders },
-    body: JSON.stringify({ bundleKey, quality_tier: quality }),
+    body: JSON.stringify({
+      bundle_key: bundleKey,
+      scenes: brief.scenes.map(s => ({
+        shot_id: s.id,
+        prompt:  clampPrompt(s.prompt),
+        seconds: s.target_seconds ?? brief.clip_seconds ?? 5,
+      })),
+      keyframe_config: { quality_tier: quality },
+      finish_config:   { 'finish-rife': { interpolate: false, face_restore: 'none' } },
+    }),
   });
-  if (!renderRes.ok) {
-    const body = await renderRes.text().catch(() => '');
-    return { ok: false, error: `render failed ${renderRes.status}: ${body}` };
+  if (!filmRes.ok) {
+    const body = await filmRes.text().catch(() => '');
+    return { ok: false, error: `film submit failed ${filmRes.status}: ${body}` };
   }
-  const job = await renderRes.json();
-  return { ok: true, jobId: job.jobId, status: job.status };
+  const film = await filmRes.json();
+  return { ok: true, jobId: film.film_id, status: film.phase };
 }
 
 async function checkRenderStatus(jobId) {
   if (!CFG.vivijureUrl) return null;
-  const res = await fetch(`${CFG.vivijureUrl}/api/storyboard/render/${jobId}`, {
+  const res = await fetch(`${CFG.vivijureUrl}/api/render/film/${jobId}`, {
     headers: { 'CF-Access-Client-Id': CFG.cfAccessClientId, 'CF-Access-Client-Secret': CFG.cfAccessClientSecret },
   });
   if (!res.ok) return null;
-  return res.json();
+  const j = await res.json();
+  // The staged pipeline reports `phase` (done / failed / ...) and a presigned `download_url`
+  // once done; normalize to the { status, download_url } shape the poll loop already understands.
+  return { ...j, status: j.phase };
 }
 
 // In-memory pending render map (populated from D1 on startup; survives bot restarts via D1).
@@ -877,7 +959,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const vivCast = await syncCastMember(castEntry).catch(e => { log(`[cast] ${e.message}`); return null; });
         if (vivCast) {
           castEntry.castId = vivCast.id;
-          await uploadPortrait(vivCast.id, result.buffer, result.mime).catch(() => {});
+          const pKey = await uploadPortrait(vivCast.id, result.buffer, result.mime).catch(() => null);
+          if (pKey) castEntry.portraitKey = pKey;
         }
         await saveProject(channelId);
 
@@ -986,7 +1069,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // ---------------------------------------------------------------------------
 
 client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot) return;
+  // Never react to our own messages (hard loop guard). Ignore other bots EXCEPT trusted crew
+  // bots (TRUSTED_BOT_IDS) so a crew bot can drive Slate to test renders + chat. NOTE: a driving
+  // bot must not auto-reply to Slate's own replies, or the two ping-pong -- that loop-safety lives
+  // on the driver's side; Slate only opens the gate to known ids.
+  if (message.author.id === client.user.id) return;
+  if (message.author.bot && !CFG.trustedBots.has(message.author.id)) return;
 
   const isDM         = !message.guild;
   const isMentioned  = message.mentions.has(client.user);
@@ -1086,7 +1174,8 @@ client.on(Events.MessageCreate, async (message) => {
     const vivCast = await syncCastMember(castEntry).catch(e => { log(`[cast] ${e.message}`); return null; });
     if (vivCast) {
       castEntry.castId = vivCast.id;
-      await uploadPortrait(vivCast.id, result.buffer, result.mime).catch(() => {});
+      const pKey = await uploadPortrait(vivCast.id, result.buffer, result.mime).catch(() => null);
+      if (pKey) castEntry.portraitKey = pKey;
     }
     await saveProject(channelId);
 
@@ -1134,7 +1223,15 @@ client.on(Events.MessageCreate, async (message) => {
       '...'
     ).catch(() => {});
 
-    const result = await submitToVivijure(project.brief, quality);
+    let result;
+    try {
+      result = await submitToVivijure(project.brief, quality);
+    } catch (e) {
+      log(`[render] submitToVivijure threw: ${e.message}`);
+      await message.reply(`Render submission errored: ${e.message}`).catch(() => {});
+      return;
+    }
+    log(`[render] result: ${JSON.stringify(result).slice(0, 200)}`);
     if (result.ok) {
       pendingRenders.set(result.jobId, { channelId, quality });
       await d1Query(
@@ -1143,8 +1240,10 @@ client.on(Events.MessageCreate, async (message) => {
       ).catch(() => {});
       await message.reply(`Render submitted! Job \`${result.jobId}\` -- I'll let you know when it's done.`).catch(() => {});
     } else {
-      const json = '```json\n' + JSON.stringify(project.brief, null, 2).slice(0, 1800) + '\n```';
-      await message.reply(`Render submission failed: ${result.error}\n\nStoryboard JSON:\n${json}`).catch(() => {});
+      const json = '```json\n' + JSON.stringify(project.brief, null, 2).slice(0, 1400) + '\n```';
+      for (const chunk of splitMessage(`Render submission failed: ${result.error}\n\nStoryboard JSON:\n${json}`)) {
+        await message.reply(chunk).catch(() => {});
+      }
     }
     return;
   }
