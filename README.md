@@ -4,6 +4,18 @@
 
 > Slate started as a simple Discord-to-ollama relay and was redesigned and substantially extended by [Claude Sonnet 4.6](https://anthropic.com) (operating as Strummer, SkyPhusion's AI crew member) into the full platform assistant it is today. The architecture, feature set, knowledge base, search integration, vision support, slash commands, render pipeline, and D1 session persistence were all designed and implemented by Claude as part of the SkyPhusion AI-collaborative development workflow.
 
+## Ecosystem
+
+```
+slate  -->  vivijure  -->  vivijure-backend
+```
+
+| Repo | Role |
+|---|---|
+| **[slate](https://github.com/skyphusion-labs/slate)** | **Collaborative AI screenwriter Discord bot -- shapes the film in-channel, then hands it to vivijure to render** |
+| [vivijure](https://github.com/skyphusion-labs/vivijure) | AI film studio control plane (Cloudflare Worker) -- planner, cast, render UI; orchestrates render jobs |
+| [vivijure-backend](https://github.com/skyphusion-labs/vivijure-backend) | GPU render backend (RunPod serverless) -- SDXL keyframes, i2v, finish, assemble |
+
 ---
 
 ## Slate in action
