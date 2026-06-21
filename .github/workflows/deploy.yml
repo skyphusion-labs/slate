@@ -1,0 +1,60 @@
+name: deploy
+
+# Deploy the Cloudflare Workers for slate on a green push to main.
+#
+# Scope: this repo has three runtime pieces --
+#   - the Discord bot (bot.mjs), which runs as a host-side Docker stack on its
+#     host (stacks/dischord.yml: ssh + docker compose up). NOT owned by CI.
+#   - search-worker/ -> Cloudflare Worker `vivijure-search`
+#   - log-worker/    -> Cloudflare Worker `slate-logs`
+# The two Workers (committed wrangler.toml, plain `wrangler deploy`) are the
+# CI-deployable pieces; the bot stays a deliberate host-side step.
+#
+# Runner: GitHub-hosted ubuntu-latest. PUBLIC repo, so deploy is gated to
+# push-to-main (never a fork PR) and runs fork-safe.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   CLOUDFLARE_API_TOKEN   -- CF API token with Workers Scripts:Edit (the
+#                             workers bind Browser Rendering, Vectorize, R2).
+#   CLOUDFLARE_ACCOUNT_ID  -- the Cloudflare account ID.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-slate-workers-main
+  cancel-in-progress: false
+
+jobs:
+  deploy-workers:
+    name: Deploy slate workers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # search-worker has a committed package-lock.json -> npm ci.
+      - name: Deploy search-worker (vivijure-search)
+        working-directory: search-worker
+        run: |
+          npm ci
+          npm run typecheck
+          npx wrangler deploy
+
+      # log-worker has no lockfile (dev deps only) -> npm install.
+      - name: Deploy log-worker (slate-logs)
+        working-directory: log-worker
+        run: |
+          npm install
+          npm run typecheck
+          npx wrangler deploy
