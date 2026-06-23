@@ -28,6 +28,12 @@ studio API, so the web control panel is not needed to render a film:
   field (projected from `GET /api/modules`) and is honest about needing a module installed and
   dialogue to caption. (The studio's `/api/render/film` `dialogue_lines` forward is filed as
   vivijure#296; until it ships the lines ride along and captions activate once it lands.)
+- **The pre-submit huddle** -- before a render goes out, Slate pulls the group in: she reads back the
+  settings (backend, tier, subtitles, title/credits), flags heads-ups (a portrait she'll generate, a
+  prompt she'll trim), and offers the next creative beat or a clean ship, in her own warm-collaborator
+  voice (varying by context, never a fixed script). Confirm with `ship it` / `!render now` / `!ship`
+  / `/render confirm:true`; an explicit quality skips the huddle. The submit path is now a single
+  shared runner across the `!` and `/` surfaces.
 
 Render settings (backend, tier, title/credit cards) live on the storyboard brief and round-trip
 through D1. Slate runs no render logic of its own; it is a thin, registry-projecting client of the

@@ -41,7 +41,9 @@
 //   !backend [name|auto]   choose the render backend (own GPU vs cloud); options come from the studio
 //   !titlecard <title> [| subtitle] [|| credit; credit]  set the opening title + end-credit cards
 //   !subtitles on|off      caption spoken dialogue in the rendered film
-//   !render [quality]      submit to Vivijure (quality: draft | standard | final; default: project tier)
+//   !render                review the settings with a quick huddle, then ship on "ship it" / !render now
+//   !render [quality|now]  skip the huddle and submit straight away (quality: draft | standard | final)
+//   !ship                  confirm + submit the render Slate just huddled on
 //   !undo                  roll back the last brief extraction
 //   !learn <text or URL>   index a film reference into the knowledge base
 //   !reset                 clear the project and start fresh
@@ -50,6 +52,11 @@
 // commands above, held on the storyboard brief, and carried to the studio API at submit time --
 // Slate runs no render logic itself. Backend names + quality tiers are projected live from the
 // studio registry (GET /api/modules), never hardcoded in a parallel list.
+//
+// Before a render goes out, Slate runs a short "huddle": she reads back the settings (backend, tier,
+// subtitles, title/credits), flags anything worth knowing, and offers the next creative beat or a
+// clean "ship it." Confirm with "ship it" (or !render now / !ship); set an explicit quality to skip
+// the huddle. The tone is fixed; the wording varies by context.
 //
 // Slash commands: /brief /portrait /thumbnail /model /backend /titlecard /subtitles /render /undo /learn /reset
 // (registered globally on startup; guild propagation is instant, global takes ~1 hour)
@@ -1097,7 +1104,166 @@ async function checkRenderStatus(jobId) {
   return { ...j, status: j.phase };
 }
 
-// In-memory pending render map (populated from D1 on startup; survives bot restarts via D1).
+// ---------------------------------------------------------------------------
+// The "huddle before we ship": Slate's pre-submit checklist, in her own voice.
+//
+// Slate is a collaborator, not a submit button. Before a render goes out she pulls the group in:
+// names the film, reads back what is set (backend, quality, subtitles, title/credits), flags
+// anything worth a heads-up, and offers the next creative beat or a clean "ship it." The TONE is
+// fixed (warm, concise, a partner's nudge); the WORDS vary by context and rotate so she never reads
+// like a form. Conrad's confirmed target:
+//   "Okay, I think RUST is ready -- before I send it off: own GPU, draft quality, subtitles off, no
+//    title card yet -- want a title or credits first, or ship it?"
+// ---------------------------------------------------------------------------
+
+// A small rotating index so repeated huddles in a channel do not open with the identical word.
+let huddleSeq = 0;
+function pick(arr) { return arr[huddleSeq % arr.length]; }
+
+// Human-readable backend label for the huddle ("own GPU" reads better than "own-gpu").
+function backendLabel(rs) {
+  if (!rs.motion_backend) return 'auto backend';
+  if (/own[-_]?gpu/i.test(rs.motion_backend)) return 'own GPU';
+  if (/cloud/i.test(rs.motion_backend)) return 'cloud';
+  return rs.motion_backend;
+}
+
+// Build the settings read-back as natural fragments (not a table): "own GPU, draft quality,
+// subtitles off, no title card yet". Order mirrors how someone would actually say it.
+function huddleSettingsPhrase(brief) {
+  const rs = brief.render_settings || emptyRenderSettings();
+  const frags = [];
+  frags.push(backendLabel(rs));
+  frags.push(`${rs.quality_tier || 'draft'} quality`);
+  const hasDialogue = brief.scenes.some((s) => s.dialogue && String(s.dialogue).trim());
+  if (rs.subtitles) frags.push(hasDialogue ? 'subtitles on' : 'subtitles on (no dialogue to caption yet)');
+  else frags.push('subtitles off');
+  if (rs.titles?.text) frags.push(`title card "${rs.titles.text}"`);
+  else frags.push('no title card yet');
+  if (rs.credits?.lines?.length) frags.push(`${rs.credits.lines.length} credit line(s)`);
+  return frags.join(', ');
+}
+
+// The proactive offer that closes the huddle: nudge toward the most valuable un-set creative beat
+// (a title, then credits, then subtitles when there is dialogue), else a clean "ship it?".
+function huddleOffer(brief) {
+  const rs = brief.render_settings || emptyRenderSettings();
+  const hasDialogue = brief.scenes.some((s) => s.dialogue && String(s.dialogue).trim());
+  if (!rs.titles?.text) return pick([
+    'want a title card first, or ship it?',
+    'should we open on a title, or send it as is?',
+    'want to set a title (and credits), or ship it?',
+  ]);
+  if (!rs.credits?.lines?.length) return pick([
+    'want to roll credits at the end, or ship it?',
+    'should I add a credit card, or send it?',
+  ]);
+  if (hasDialogue && !rs.subtitles) return pick([
+    'want subtitles on for the dialogue, or ship it?',
+    'should I caption the dialogue, or send it as is?',
+  ]);
+  return pick(['ship it?', 'good to send?', 'ready when you are -- ship it?']);
+}
+
+// Heads-up fragments for things the group probably wants to know before shipping (not blockers):
+// missing portraits for a multi-character film, an over-long prompt that will be trimmed.
+function huddleHeadsUp(brief) {
+  const notes = [];
+  const usedSlots = new Set(brief.scenes.flatMap((s) => s.character_slots ?? []));
+  const referenced = brief.cast.filter((c) => usedSlots.has(c.slot));
+  if (referenced.length > 1) {
+    const noRef = referenced.filter((c) => !(c.castId && c.portraitKey));
+    const renderable = noRef.filter((c) => c.prompt && c.prompt.trim());
+    if (renderable.length) notes.push(`I'll generate a quick look for ${renderable.map((c) => c.name || c.slot).join(' and ')} first`);
+  }
+  const longOnes = brief.scenes.filter((s) => (s.prompt ?? '').trim().split(/\s+/).filter(Boolean).length > 50);
+  if (longOnes.length) notes.push(`I'll tighten ${longOnes.length} long scene prompt(s) to the renderer's cap`);
+  return notes;
+}
+
+// Assemble the full huddle message. Varies the opener and the offer; stays warm and concise.
+function buildSubmitHuddle(brief) {
+  huddleSeq++;
+  const name = brief.title ? `**${brief.title}**` : 'this';
+  const opener = pick([
+    `Okay, I think ${name} is ready`,
+    `Alright, ${name} is looking ready to me`,
+    `I think we've got ${name}`,
+  ]);
+  const settings = huddleSettingsPhrase(brief);
+  const heads = huddleHeadsUp(brief);
+  const headsLine = heads.length ? ` (${heads.join('; ')})` : '';
+  const offerRaw = huddleOffer(brief);
+  const offer = offerRaw.charAt(0).toUpperCase() + offerRaw.slice(1);
+  const ship = pick([
+    "Say `ship it` (or `!render now`) and I'll send it.",
+    "Just say `ship it` when you're ready, or keep tuning.",
+    "`ship it` and it's off; or adjust anything first.",
+  ]);
+  return `${opener} -- before I send it off: ${settings}${headsLine}. ${offer}\n${ship}`;
+}
+
+// Per-channel armed confirmation: the huddle arms it; a "ship it" / "!render now" within the window
+// fires the actual submit. Short TTL so a stale "yes" hours later does not launch a render.
+const pendingConfirms = new Map(); // channelId -> { quality, at }
+const CONFIRM_TTL_MS = 10 * 60 * 1000;
+
+function armConfirm(channelId, quality) {
+  pendingConfirms.set(channelId, { quality, at: Date.now() });
+}
+function takeConfirm(channelId) {
+  const c = pendingConfirms.get(channelId);
+  if (!c) return null;
+  pendingConfirms.delete(channelId);
+  if (Date.now() - c.at > CONFIRM_TTL_MS) return null;
+  return c;
+}
+// Natural affirmatives that mean "send it" when a huddle is armed. Kept tight so ordinary
+// conversation ("yes, that scene works") does not accidentally launch a render -- the phrase must be
+// short and shipping-flavored.
+const SHIP_RE = /^(ship it|ship|send it|send|go for it|go|do it|launch it|launch|yes ship|yep ship|render it now)[.!]?$/i;
+function looksLikeShip(text) {
+  return SHIP_RE.test((text ?? '').trim());
+}
+
+// The shared submit runner: auto-fill refs (#17), submit, persist the pending job, and report the
+// outcome through `say` (a channel.send / editReply callback) so both the ! and / paths reuse one
+// code path. Returns true on a successful submit. Voice lives in the strings here.
+async function runSubmit(brief, channelId, quality, imageModel, say) {
+  const refs = await ensureCharacterRefs(brief, channelId, imageModel).catch(() => ({ ok: true, generated: [] }));
+  if (!refs.ok) {
+    await say(`Hold on -- ${refs.missing.join(' and ')} ${refs.missing.length > 1 ? "don't" : "doesn't"} have a look yet, and I can't render a character I can't picture. Describe them (or run \`!portrait\`) and I'll fold them in.`);
+    return false;
+  }
+  if (refs.generated?.length) {
+    await say(`Sketched in a look for ${refs.generated.join(' and ')} so they're consistent on screen. Sending it now...`);
+  }
+  let result;
+  try {
+    result = await submitToVivijure(brief, { quality });
+  } catch (e) {
+    log(`[render] submitToVivijure threw: ${e.message}`);
+    await say(`Something went sideways on submit: ${e.message}`);
+    return false;
+  }
+  log(`[render] result: ${JSON.stringify(result).slice(0, 200)}`);
+  if (!result.ok) {
+    await say(`The studio turned the submit down: ${result.error}`);
+    return false;
+  }
+  pendingRenders.set(result.jobId, { channelId, quality });
+  await d1Query(
+    "INSERT OR IGNORE INTO render_jobs (job_id, channel_id, quality, submitted_at, status) VALUES (?, ?, ?, ?, 'pending')",
+    [result.jobId, channelId, quality, new Date().toISOString()],
+  ).catch(() => {});
+  const trimNote = result.trims?.length
+    ? ` (I tightened ${result.trims.length} scene prompt(s) to the renderer's 50-word cap -- shout if I cut the wrong beat)`
+    : '';
+  await say(`It's off to the studio at **${quality}**! Job \`${result.jobId}\`${trimNote}. I'll ping you here the moment it's done.`);
+  return true;
+}
+
+// // In-memory pending render map (populated from D1 on startup; survives bot restarts via D1).
 const pendingRenders = new Map(); // jobId -> { channelId, quality }
 
 async function loadPendingRenders() {
@@ -1206,9 +1372,10 @@ const SLASH_COMMANDS = [
     .addStringOption(o => o.setName('scene').setDescription('Scene ID (from /brief)').setRequired(true)),
   new SlashCommandBuilder()
     .setName('render')
-    .setDescription('Submit the storyboard to Vivijure for rendering')
-    .addStringOption(o => o.setName('quality').setDescription('Quality tier override (default: the project tier, or draft)').setRequired(false)
-      .addChoices({ name: 'draft', value: 'draft' }, { name: 'standard', value: 'standard' }, { name: 'final', value: 'final' })),
+    .setDescription('Review the render settings and submit (defaults to a quick huddle before shipping)')
+    .addStringOption(o => o.setName('quality').setDescription('Quality tier override; setting it ships immediately (default: the project tier, or draft)').setRequired(false)
+      .addChoices({ name: 'draft', value: 'draft' }, { name: 'standard', value: 'standard' }, { name: 'final', value: 'final' }))
+    .addBooleanOption(o => o.setName('confirm').setDescription('Skip the huddle and send it now').setRequired(false)),
   new SlashCommandBuilder()
     .setName('backend')
     .setDescription('Choose the render backend (own GPU vs cloud), or auto to let the studio decide')
@@ -1351,35 +1518,24 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const project = await getProject(channelId);
         const rs = ensureRenderSettings(project.brief);
         const quality = interaction.options.getString('quality') ?? rs.quality_tier ?? 'draft';
+        const confirm = interaction.options.getBoolean('confirm') ?? false;
 
         if (project.brief.scenes.length === 0) {
-          await interaction.reply("The storyboard doesn't have any scenes yet -- keep planning!");
+          await interaction.reply("We don't have any scenes yet -- let's keep building the story first.");
           return;
         }
+
+        // Default: huddle first (same as !render). confirm:true (or an explicit quality) ships now.
+        if (!confirm && interaction.options.getString('quality') == null) {
+          armConfirm(channelId, quality);
+          await interaction.reply(buildSubmitHuddle(project.brief));
+          break;
+        }
+
         await interaction.deferReply();
-
-        // Issue #17: make sure a multi-character film carries a ref per referenced character before
-        // submit; auto-derive what we can, block clearly on what we cannot.
-        const refs = await ensureCharacterRefs(project.brief, channelId, project.imageModel);
-        if (!refs.ok) {
-          await interaction.editReply(`I can't submit yet: ${refs.missing.join(', ')} ${refs.missing.length > 1 ? 'have' : 'has'} no look to render from. Describe them (or run /portrait) and I'll carry them in.`);
-          return;
-        }
-
-        const result = await submitToVivijure(project.brief, { quality });
-        if (result.ok) {
-          pendingRenders.set(result.jobId, { channelId, quality });
-          await d1Query(
-            "INSERT OR IGNORE INTO render_jobs (job_id, channel_id, quality, submitted_at, status) VALUES (?, ?, ?, ?, 'pending')",
-            [result.jobId, channelId, quality, new Date().toISOString()],
-          ).catch(() => {});
-          const trimNote = result.trims?.length
-            ? ` (tightened ${result.trims.length} scene prompt(s) to the 50-word renderer cap)`
-            : '';
-          await interaction.editReply(`Render submitted at **${quality}**! Job \`${result.jobId}\`${trimNote} -- I'll let you know when it's done.`);
-        } else {
-          await interaction.editReply(`Render failed: ${result.error}`);
-        }
+        pendingConfirms.delete(channelId);
+        const say = (t) => interaction.editReply(t).catch(() => {});
+        await runSubmit(project.brief, channelId, quality, project.imageModel, say);
         break;
       }
 
@@ -1679,55 +1835,27 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  if (rawText.startsWith('!render')) {
+  if (rawText.startsWith('!render') || rawText === '!ship') {
     const parts   = rawText.split(/\s+/);
     const project = await getProject(channelId);
     const rs      = ensureRenderSettings(project.brief);
-    const quality = ['draft', 'standard', 'final'].includes(parts[1]) ? parts[1] : (rs.quality_tier ?? 'draft');
+    // An explicit tier or "now" (and `!ship`) means skip the huddle and send. Otherwise huddle first.
+    const tierArg = ['draft', 'standard', 'final'].includes(parts[1]) ? parts[1] : null;
+    const skipHuddle = rawText === '!ship' || parts[1] === 'now' || tierArg != null;
+    const quality = tierArg ?? (rs.quality_tier ?? 'draft');
 
     if (project.brief.scenes.length === 0) {
-      await message.reply("The storyboard doesn't have any scenes yet -- keep planning!").catch(() => {});
+      await message.reply("We don't have any scenes yet -- let's keep building the story first.").catch(() => {});
       return;
     }
 
-    const withPortraits = project.brief.cast.filter(c => c.portraitUrl).length;
-    await message.reply(
-      `Submitting to Vivijure at **${quality}** quality` +
-      (withPortraits ? ` with ${withPortraits} character portrait(s)` : ' (no portraits yet -- I\'ll add refs for any multi-character scenes)') +
-      '...'
-    ).catch(() => {});
-
-    // Issue #17: auto-fill / block on missing multi-character refs before submit.
-    const refs = await ensureCharacterRefs(project.brief, channelId, project.imageModel).catch(() => ({ ok: true, generated: [] }));
-    if (!refs.ok) {
-      await message.reply(`I can't submit yet: ${refs.missing.join(', ')} ${refs.missing.length > 1 ? 'have' : 'has'} no look to render from. Describe them (or run !portrait) and I'll carry them in.`).catch(() => {});
-      return;
-    }
-
-    let result;
-    try {
-      result = await submitToVivijure(project.brief, { quality });
-    } catch (e) {
-      log(`[render] submitToVivijure threw: ${e.message}`);
-      await message.reply(`Render submission errored: ${e.message}`).catch(() => {});
-      return;
-    }
-    log(`[render] result: ${JSON.stringify(result).slice(0, 200)}`);
-    if (result.ok) {
-      pendingRenders.set(result.jobId, { channelId, quality });
-      await d1Query(
-        "INSERT OR IGNORE INTO render_jobs (job_id, channel_id, quality, submitted_at, status) VALUES (?, ?, ?, ?, 'pending')",
-        [result.jobId, channelId, quality, new Date().toISOString()],
-      ).catch(() => {});
-      const trimNote = result.trims?.length
-        ? ` (tightened ${result.trims.length} scene prompt(s) to the 50-word renderer cap)`
-        : '';
-      await message.reply(`Render submitted! Job \`${result.jobId}\`${trimNote} -- I'll let you know when it's done.`).catch(() => {});
+    const say = (t) => message.reply(t).catch(() => {});
+    if (skipHuddle) {
+      pendingConfirms.delete(channelId);
+      await runSubmit(project.brief, channelId, quality, project.imageModel, say);
     } else {
-      const json = '```json\n' + JSON.stringify(project.brief, null, 2).slice(0, 1400) + '\n```';
-      for (const chunk of splitMessage(`Render submission failed: ${result.error}\n\nStoryboard JSON:\n${json}`)) {
-        await message.reply(chunk).catch(() => {});
-      }
+      armConfirm(channelId, quality);
+      await say(buildSubmitHuddle(project.brief));
     }
     return;
   }
@@ -1744,6 +1872,19 @@ client.on(Events.MessageCreate, async (message) => {
       await message.reply(`Failed to index: ${result.error}`).catch(() => {});
     }
     return;
+  }
+
+  // A "ship it" (or similar) while a huddle is armed fires the actual submit, so the group can
+  // confirm in plain language ("ship it") rather than a second command. Outside an armed window
+  // these words are just ordinary conversation and fall through to the LLM.
+  if (looksLikeShip(rawText)) {
+    const confirm = takeConfirm(channelId);
+    if (confirm) {
+      const project = await getProject(channelId);
+      const say = (t) => message.reply(t).catch(() => {});
+      await runSubmit(project.brief, channelId, confirm.quality, project.imageModel, say);
+      return;
+    }
   }
 
   // --- Conversation (with optional vision) ---

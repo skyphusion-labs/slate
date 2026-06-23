@@ -221,7 +221,8 @@ docker compose -p slate -f stacks/dischord.yml up -d
 | `!backend [name\|auto]` | `/backend` | Choose the render backend (own GPU vs cloud), or `auto` to let the studio decide. Options are projected live from the studio registry. |
 | `!titlecard <title> [\| sub] [\|\| credits]` | `/titlecard` | Set the opening title card + end credits (credits separated by `;` or `\|`), or clear them |
 | `!subtitles on\|off` | `/subtitles` | Caption spoken dialogue in the rendered film. Captions sync to each shot's dialogue line; they show once the brief carries dialogue and a subtitle module is installed |
-| `!render [quality]` | `/render` | Submit storyboard to Vivijure. Tier defaults to the project's setting (draft / standard / final); a multi-character film auto-fills missing character refs, and over-long scene prompts are smart-trimmed to the 50-word renderer cap |
+| `!render` | `/render` | Run the pre-submit **huddle**: Slate reads back the render settings, flags anything worth knowing, and offers the next creative beat or a clean ship. Confirm with `ship it` (or `!render now` / `!ship`); `/render confirm:true` or an explicit quality ships immediately. On submit a multi-character film auto-fills missing character refs and over-long scene prompts are smart-trimmed to the 50-word renderer cap |
+| `!ship` / `ship it` | -- | Confirm and send the render Slate just huddled on |
 | `!undo` | `/undo` | Roll back the last automatic brief extraction |
 | `!learn <text or URL>` | `/learn` | Index a film reference into the knowledge base |
 | `!reset` | `/reset` | Clear the project and start fresh |
