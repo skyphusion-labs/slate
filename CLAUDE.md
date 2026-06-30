@@ -74,7 +74,7 @@ ssh <deploy-user>@<deploy-host> "
 "
 
 # Redeploy after code changes
-rsync -az ~/dev/slate/ <deploy-user>@<deploy-host>:/root/dev/slate/ --exclude node_modules --exclude .git --exclude stacks/.env
+rsync -az ~/dev/slate/ <deploy-user>@<deploy-host>:~/dev/slate/ --exclude node_modules --exclude .git --exclude stacks/.env
 ssh <deploy-user>@<deploy-host> "docker compose -p slate -f ~/dev/slate/stacks/dischord.yml up -d --force-recreate slate"
 ```
 
