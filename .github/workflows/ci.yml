@@ -1,8 +1,7 @@
 name: CI
 
 # PR + push checks run on GitHub-hosted runners: free for public repos and fully
-# isolated, so fork PRs never touch the self-hosted infrastructure. The dischord
-# self-hosted runner ([self-hosted, linux, x64]) is reserved for trusted,
+# isolated, so fork PRs never touch the self-hosted infrastructure. A self-hosted runner ([self-hosted, linux, x64]) is reserved for trusted,
 # main-only deploy jobs (added separately).
 on:
   push:

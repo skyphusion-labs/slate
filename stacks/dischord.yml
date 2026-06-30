@@ -1,4 +1,4 @@
-# Dischord fleet stack: Slate (Vivijure Screenwriter's Assistant)
+# Production compose stack: Slate (Vivijure Screenwriter's Assistant)
 #
 # Secrets (never committed): create ~/dev/slate/stacks/.env with:
 #   DISCORD_TOKEN              - Discord bot token
@@ -15,9 +15,9 @@
 # Claude backend (default): set CF_AIG_TOKEN + CF_GATEWAY_ENDPOINT, DISCORD_MODEL=claude-sonnet-4-6
 # Ollama backend:            unset CF_AIG_TOKEN, set OLLAMA_BASE_URL + DISCORD_MODEL=<ollama model>
 #
-# Deploy:   ssh root@dischord.internal "cd ~/dev/slate/stacks && docker compose -p slate -f dischord.yml up -d"
-# Redeploy: ssh root@dischord.internal "cd ~/dev/slate/stacks && docker compose -p slate -f dischord.yml up -d --force-recreate slate"
-# Logs:     ssh root@dischord.internal "docker compose -p slate -f ~/dev/slate/stacks/dischord.yml logs -f"
+# Deploy:   ssh <deploy-user>@<deploy-host> "cd ~/dev/slate/stacks && docker compose -p slate -f dischord.yml up -d"
+# Redeploy: ssh <deploy-user>@<deploy-host> "cd ~/dev/slate/stacks && docker compose -p slate -f dischord.yml up -d --force-recreate slate"
+# Logs:     ssh <deploy-user>@<deploy-host> "docker compose -p slate -f ~/dev/slate/stacks/dischord.yml logs -f"
 
 services:
   slate:
@@ -37,7 +37,7 @@ services:
       CF_ACCESS_CLIENT_ID: ${CF_ACCESS_CLIENT_ID}
       CF_ACCESS_CLIENT_SECRET: ${CF_ACCESS_CLIENT_SECRET}
       CF_D1_TOKEN: ${CF_D1_TOKEN}
-      CF_D1_ACCOUNT_ID: fabcb25d9c7eb087110ec474a03e50d2
+      CF_D1_ACCOUNT_ID: ${CF_D1_ACCOUNT_ID}
       CF_D1_DATABASE_ID: faac1698-5ffe-4f0e-8147-761c0747e957
       CF_AIG_TOKEN: ${CF_AIG_TOKEN:-}
       CF_GATEWAY_ENDPOINT: ${CF_GATEWAY_ENDPOINT:-}

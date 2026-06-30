@@ -284,7 +284,7 @@ SEARCH_SECRET=                # must match the Worker secret
 node bot.mjs
 ```
 
-### Docker (production -- dischord)
+### Docker (production -- your Docker host)
 
 See `stacks/dischord.yml`. Create `stacks/.env` with the variables above, then:
 

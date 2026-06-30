@@ -16,7 +16,7 @@ Steps, the command used (`!brief`, `/render`, ...), and the channel context if r
 
 **Environment**
 - Backend: Claude (CF AI Gateway) or ollama fallback?
-- Where: dischord container, local `node bot.mjs`, or the `vivijure-search` Worker?
+- Where: the production container, local `node bot.mjs`, or the `vivijure-search` Worker?
 
 **Logs**
 Relevant lines from the bot log or `wrangler tail` (redact tokens).

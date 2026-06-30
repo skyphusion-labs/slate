@@ -14,7 +14,7 @@
 //   DISCORD_TOKEN               (required) bot token from the Developer Portal
 //   DISCORD_CHANNEL_IDS         comma-separated channel IDs to listen in;
 //                               if empty, only DMs and @mentions are answered
-//   OLLAMA_BASE_URL             ollama OpenAI-compat base  (default http://wendy.internal:11434/v1)
+//   OLLAMA_BASE_URL             ollama OpenAI-compat base  (default http://localhost:11434/v1)
 //   DISCORD_MODEL               model id                   (default qwen3.6:27b-ctx8k)
 //   DISCORD_HISTORY             rolling history depth in exchange pairs (default 20)
 //   DISCORD_LOG                 tee logs to this file path (optional)
@@ -116,7 +116,7 @@ if (!process.env.DISCORD_TOKEN) {
 
 const CFG = {
   token:                process.env.DISCORD_TOKEN,
-  ollamaBase:           process.env.OLLAMA_BASE_URL         ?? 'http://wendy.internal:11434/v1',
+  ollamaBase:           process.env.OLLAMA_BASE_URL         ?? 'http://localhost:11434/v1',
   model:                process.env.DISCORD_MODEL           ?? 'qwen3.6:27b-ctx8k',
   channelIds:           new Set((process.env.DISCORD_CHANNEL_IDS ?? '').split(',').filter(Boolean)),
   trustedBots:          new Set((process.env.TRUSTED_BOT_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
