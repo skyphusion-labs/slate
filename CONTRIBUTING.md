@@ -15,7 +15,7 @@ Slate is developed under the SkyPhusion AI-collaborative model: human vision dri
 
 ```bash
 npm install
-cp stacks/dischord.yml .          # reference for required env vars
+cp stacks/compose.prod.yml .          # reference for required env vars
 # create a local .env with your test bot token + channel IDs
 node bot.mjs
 ```

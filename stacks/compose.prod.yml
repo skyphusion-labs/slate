@@ -15,9 +15,9 @@
 # Claude backend (default): set CF_AIG_TOKEN + CF_GATEWAY_ENDPOINT, DISCORD_MODEL=claude-sonnet-4-6
 # Ollama backend:            unset CF_AIG_TOKEN, set OLLAMA_BASE_URL + DISCORD_MODEL=<ollama model>
 #
-# Deploy:   ssh <deploy-user>@<deploy-host> "cd ~/dev/slate/stacks && docker compose -p slate -f dischord.yml up -d"
-# Redeploy: ssh <deploy-user>@<deploy-host> "cd ~/dev/slate/stacks && docker compose -p slate -f dischord.yml up -d --force-recreate slate"
-# Logs:     ssh <deploy-user>@<deploy-host> "docker compose -p slate -f ~/dev/slate/stacks/dischord.yml logs -f"
+# Deploy:   ssh <deploy-user>@<deploy-host> "cd ~/dev/slate/stacks && docker compose -p slate -f compose.prod.yml up -d"
+# Redeploy: ssh <deploy-user>@<deploy-host> "cd ~/dev/slate/stacks && docker compose -p slate -f compose.prod.yml up -d --force-recreate slate"
+# Logs:     ssh <deploy-user>@<deploy-host> "docker compose -p slate -f ~/dev/slate/stacks/compose.prod.yml logs -f"
 
 services:
   slate:

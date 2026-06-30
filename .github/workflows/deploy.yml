@@ -4,7 +4,7 @@ name: deploy
 #
 # Scope: this repo has three runtime pieces --
 #   - the Discord bot (bot.mjs), which runs as a host-side Docker stack on its
-#     host (stacks/dischord.yml: ssh + docker compose up). NOT owned by CI.
+#     host (stacks/compose.prod.yml: ssh + docker compose up). NOT owned by CI.
 #   - search-worker/ -> Cloudflare Worker `vivijure-search`
 #   - log-worker/    -> Cloudflare Worker `slate-logs`
 # The two Workers (committed wrangler.toml, plain `wrangler deploy`) are the
