@@ -26,6 +26,11 @@ When using Slate you agree to:
   [Community Guidelines](https://discord.com/guidelines).
 - Not use Slate to create, request, or distribute content that is illegal, infringing, harassing,
   or that violates the rights of others.
+- **Absolutely no sexual content involving minors, real or synthetic, ever**, and no
+  non-consensual intimate imagery and no non-consensual deepfakes of a real person. This line is
+  absolute, it has no artistic or "it is not real" exception, and it is also the law (18 U.S.C.
+  1466A / 2252A). Slate feeds the Vivijure render pipeline, which enforces the same bright line; see
+  the [Vivijure Acceptable Use Policy](https://github.com/skyphusion-labs/vivijure/blob/main/docs/legal/ACCEPTABLE-USE.md).
 - Not attempt to extract secrets or credentials, bypass authentication, disrupt the service, or
   misuse the underlying APIs (including via prompt injection).
 - Hold any necessary rights to the material (text, images, references) you provide to Slate.
