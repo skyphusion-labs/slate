@@ -138,9 +138,12 @@ Slash commands register globally on startup via `Routes.applicationCommands`.
 
 - Crew members work as their own Unix + gh identity. The FIRST command in any op is the member's own
   login shell: `sudo -u <member> bash -lc '<ops>'` (loads their `$HOME`, their `~/dev/slate` clone,
-  their gh/CF creds). Commits and PRs land under the member's `skyphusion-<member>` identity.
-- Conrad's own commits in the `skyphusion-labs` org author as `conrad@skyphusion.org` (the public-org
-  identity); never his `rockenhaus.net` address as a commit author.
+  their gh/CF creds).
+- Crew commits land under the member's own `skyphusion-<member>` identity, never Conrad's. (Conrad
+  devs ONLY on his laptop, where his commits author as `Conrad Rockenhaus <conrad@skyphusion.org>`
+  -- his real name kept, the in-house `@skyphusion.org` email; his name is never scrubbed and his
+  history never rewritten. On jello the `conrad` user is the god process and commits as
+  `Mackaye <mackaye@skyphusion.org>`.)
 - Cross-project operating context lives in the main auto-memory
   (`~/.claude/projects/-home-conrad/memory/`); load it before acting.
 
