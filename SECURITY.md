@@ -13,17 +13,23 @@ Slate is pre-1.0 software under active development. Security fixes are applied t
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Report security issues privately to:
-
-- **Email:** crockenhaus@icloud.com
-- **Subject line:** `[SECURITY] skyphusion-slate -- <brief description>`
+Report security issues privately to **security@skyphusion.org** (subject line:
+`[SECURITY] slate -- <brief description>`). If you would rather use GitHub, open the repository's
+**Security** tab and click **"Report a vulnerability"** to file a private advisory that only you and
+the maintainers can see.
 
 Include:
 - A description of the vulnerability and its potential impact
 - Steps to reproduce or a proof-of-concept (if safe to share)
 - Any suggested mitigations
 
-You can expect an acknowledgment within 48 hours and a resolution or status update within 7 days.
+What to expect:
+
+- **Acknowledgment** within a reasonable window (target: 5 business days).
+- A **fix** in the latest `main` once we confirm the issue; time-sensitive reports should say so.
+- **Credit** for your report when the fix ships, unless you would rather stay anonymous.
+
+Please give us a chance to ship a fix before any public disclosure.
 
 ## Scope
 
