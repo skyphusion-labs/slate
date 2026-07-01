@@ -1,16 +1,23 @@
 # Production compose stack: Slate (Vivijure Screenwriter's Assistant)
 #
-# Secrets (never committed): create ~/dev/slate/stacks/.env with:
-#   DISCORD_TOKEN              - Discord bot token
-#   CF_ACCESS_CLIENT_ID        - CF Access service token client ID
-#   CF_ACCESS_CLIENT_SECRET    - CF Access service token secret
-#   CF_D1_TOKEN                - CF API token with D1:Write permission
-#   CF_AIG_TOKEN               - CF API token for AI Gateway (Anthropic path)
-#   CF_GATEWAY_ENDPOINT        - CF AI Gateway compat URL
-#   SEARCH_WORKER_URL          - vivijure-search Worker base URL
-#   SEARCH_SECRET              - shared secret for X-Search-Secret header
-#   CF_R2_ACCESS_ID            - R2 access key (for portrait uploads via LLM API)
-#   CF_R2_SECRET               - R2 secret key
+# Config + secrets (never committed): copy stacks/.env.example to stacks/.env and
+# fill it in. docker compose auto-loads stacks/.env; every value below is read by
+# ${VAR} reference, so no real deployment id or secret is baked into this file.
+#   Non-secret identifiers (your deployment topology):
+#     DISCORD_CHANNEL_IDS      - comma-separated Discord channel IDs the bot serves
+#     CF_D1_ACCOUNT_ID         - Cloudflare account ID
+#     CF_D1_DATABASE_ID        - D1 database ID
+#   Secrets:
+#     DISCORD_TOKEN            - Discord bot token
+#     CF_ACCESS_CLIENT_ID      - CF Access service token client ID
+#     CF_ACCESS_CLIENT_SECRET  - CF Access service token secret
+#     CF_D1_TOKEN              - CF API token with D1:Write permission
+#     CF_AIG_TOKEN             - CF API token for AI Gateway (Anthropic path)
+#     CF_GATEWAY_ENDPOINT      - CF AI Gateway compat URL
+#     SEARCH_WORKER_URL        - vivijure-search Worker base URL
+#     SEARCH_SECRET            - shared secret for X-Search-Secret header
+#     CF_R2_ACCESS_ID          - R2 access key (for portrait uploads via LLM API)
+#     CF_R2_SECRET             - R2 secret key
 #
 # Claude backend (default): set CF_AIG_TOKEN + CF_GATEWAY_ENDPOINT, DISCORD_MODEL=claude-sonnet-4-6
 # Ollama backend:            unset CF_AIG_TOKEN, set OLLAMA_BASE_URL + DISCORD_MODEL=<ollama model>
@@ -29,7 +36,7 @@ services:
       - /root/dev/slate:/app
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
-      DISCORD_CHANNEL_IDS: "1513838828991811616"
+      DISCORD_CHANNEL_IDS: ${DISCORD_CHANNEL_IDS}
       DISCORD_MODEL: ${DISCORD_MODEL:-claude-sonnet-4-6}
       DISCORD_LOG: /dev/stdout
       VIVIJURE_API_URL: https://vivijure.skyphusion.org
@@ -38,7 +45,7 @@ services:
       CF_ACCESS_CLIENT_SECRET: ${CF_ACCESS_CLIENT_SECRET}
       CF_D1_TOKEN: ${CF_D1_TOKEN}
       CF_D1_ACCOUNT_ID: ${CF_D1_ACCOUNT_ID}
-      CF_D1_DATABASE_ID: faac1698-5ffe-4f0e-8147-761c0747e957
+      CF_D1_DATABASE_ID: ${CF_D1_DATABASE_ID}
       CF_AIG_TOKEN: ${CF_AIG_TOKEN:-}
       CF_GATEWAY_ENDPOINT: ${CF_GATEWAY_ENDPOINT:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
