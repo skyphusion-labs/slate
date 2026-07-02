@@ -2,7 +2,7 @@ name = "slate-search"
 main = "src/index.ts"
 compatibility_date = "2025-06-14"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = false  # no workers.dev door; self-authenticates + reached by binding/token (defense-in-depth; fleet-chezmoi#46)
+workers_dev = true  # consumed door: the slate bot (SEARCH_WORKER_URL, X-Search-Secret) calls slate-search directly after the #170 cutover repointed it off the orphan vivijure-search; pin true so every deploy asserts the door OPEN (slate#51)
 
 [browser]
 binding = "BROWSER"
