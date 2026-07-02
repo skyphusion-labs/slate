@@ -1,0 +1,184 @@
+import { describe, it, expect } from 'vitest';
+import {
+  PROMPT_WORD_CAP,
+  smartTrimPrompt,
+  buildFilmTitles,
+  parseCreditLines,
+  subtitleEnableField,
+  buildCharacterRefs,
+  matchBackend,
+} from './lib.mjs';
+
+// Real unit tests over the pure helpers extracted from bot.mjs. No Discord client, no network,
+// no env: each asserts the exact transform contract these functions promise to the render path.
+
+const words = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+
+describe('smartTrimPrompt', () => {
+  it('leaves a prompt at or under the cap untouched', () => {
+    const r = smartTrimPrompt(words(PROMPT_WORD_CAP));
+    expect(r.trimmed).toBe(false);
+    expect(r.text.split(' ').length).toBe(PROMPT_WORD_CAP);
+  });
+
+  it('normalizes whitespace and trims edges without flagging a trim', () => {
+    expect(smartTrimPrompt('  a   b\tc  ')).toEqual({ text: 'a   b\tc', trimmed: false });
+  });
+
+  it('clamps to the cap and flags a trim when over', () => {
+    const r = smartTrimPrompt(words(PROMPT_WORD_CAP + 20));
+    expect(r.trimmed).toBe(true);
+    expect(r.text.split(/\s+/).length).toBe(PROMPT_WORD_CAP);
+  });
+
+  it('keeps the leading sentence whole, then tops up from the rest', () => {
+    const head = 'A hero runs fast.'; // 4 words, motion-critical clause
+    const tail = words(PROMPT_WORD_CAP + 30);
+    const r = smartTrimPrompt(`${head} ${tail}`);
+    expect(r.trimmed).toBe(true);
+    expect(r.text.startsWith('A hero runs fast.')).toBe(true);
+    expect(r.text.split(/\s+/).length).toBe(PROMPT_WORD_CAP);
+  });
+
+  it('hard-slices when the leading sentence alone exceeds the cap', () => {
+    const longSentence = words(PROMPT_WORD_CAP + 10) + '.';
+    const r = smartTrimPrompt(longSentence + ' ' + words(5));
+    expect(r.trimmed).toBe(true);
+    expect(r.text.split(/\s+/).length).toBe(PROMPT_WORD_CAP);
+    // Falls back to a plain head slice: first PROMPT_WORD_CAP tokens of the whole text.
+    expect(r.text.startsWith('w0 w1 w2')).toBe(true);
+  });
+
+  it('treats null/undefined/empty as an empty untrimmed prompt', () => {
+    expect(smartTrimPrompt(undefined)).toEqual({ text: '', trimmed: false });
+    expect(smartTrimPrompt(null)).toEqual({ text: '', trimmed: false });
+    expect(smartTrimPrompt('')).toEqual({ text: '', trimmed: false });
+  });
+});
+
+describe('buildFilmTitles', () => {
+  it('returns undefined for a null/empty render-settings', () => {
+    expect(buildFilmTitles(null)).toBeUndefined();
+    expect(buildFilmTitles(undefined)).toBeUndefined();
+    expect(buildFilmTitles({})).toBeUndefined();
+  });
+
+  it('emits a title card from title text', () => {
+    expect(buildFilmTitles({ titles: { text: '  The Reel  ' } })).toEqual({ title: { text: 'The Reel' } });
+  });
+
+  it('includes a subtitle only when the title text is present', () => {
+    expect(buildFilmTitles({ titles: { text: 'The Reel', subtitle: '  A short  ' } }))
+      .toEqual({ title: { text: 'The Reel', subtitle: 'A short' } });
+    // Subtitle alone (no title text) is dropped -- the card requires text.
+    expect(buildFilmTitles({ titles: { subtitle: 'orphan' } })).toBeUndefined();
+  });
+
+  it('strips blank credit lines and omits credits when all blank', () => {
+    expect(buildFilmTitles({ credits: { lines: ['Dir: X', '  ', '', 'DP: Y'] } }))
+      .toEqual({ credits: { lines: ['Dir: X', 'DP: Y'] } });
+    expect(buildFilmTitles({ credits: { lines: ['  ', ''] } })).toBeUndefined();
+  });
+
+  it('combines title and credits', () => {
+    expect(buildFilmTitles({ titles: { text: 'T' }, credits: { lines: ['a'] } }))
+      .toEqual({ title: { text: 'T' }, credits: { lines: ['a'] } });
+  });
+
+  it('ignores a non-array credits.lines', () => {
+    expect(buildFilmTitles({ credits: { lines: 'not-an-array' } })).toBeUndefined();
+  });
+});
+
+describe('parseCreditLines', () => {
+  it('splits on pipe, semicolon, and newline', () => {
+    expect(parseCreditLines('a | b ; c\nd')).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('trims each line and drops blanks', () => {
+    expect(parseCreditLines('  a  ||  ; \n b ')).toEqual(['a', 'b']);
+  });
+
+  it('returns an empty array for null/undefined/empty', () => {
+    expect(parseCreditLines(null)).toEqual([]);
+    expect(parseCreditLines(undefined)).toEqual([]);
+    expect(parseCreditLines('')).toEqual([]);
+  });
+});
+
+describe('subtitleEnableField', () => {
+  it('prefers a bool key that looks like an enable switch', () => {
+    const mod = { config_schema: { quality: { type: 'string' }, burn_in: { type: 'bool' } } };
+    expect(subtitleEnableField(mod)).toBe('burn_in');
+  });
+
+  it('matches enable/on/subtitle/caption name shapes', () => {
+    expect(subtitleEnableField({ config_schema: { on: { type: 'bool' } } })).toBe('on');
+    expect(subtitleEnableField({ config_schema: { captions: { type: 'bool' } } })).toBe('captions');
+  });
+
+  it('falls back to the first bool field when none match the enable shape', () => {
+    const mod = { config_schema: { alpha: { type: 'bool' }, beta: { type: 'bool' } } };
+    expect(subtitleEnableField(mod)).toBe('alpha');
+  });
+
+  it('falls back to "enabled" when there are no bool fields or no schema', () => {
+    expect(subtitleEnableField({ config_schema: { size: { type: 'string' } } })).toBe('enabled');
+    expect(subtitleEnableField({})).toBe('enabled');
+    expect(subtitleEnableField(null)).toBe('enabled');
+  });
+});
+
+describe('buildCharacterRefs', () => {
+  it('includes only cast with both a studio castId and an uploaded portraitKey', () => {
+    const brief = {
+      cast: [
+        { slot: 'A', name: 'Ada', castId: 'c1', portraitKey: 'k1' },
+        { slot: 'B', name: 'Ben', castId: 'c2' },              // no portraitKey -> dropped
+        { slot: 'C', name: 'Cy', portraitKey: 'k3' },          // no castId -> dropped
+      ],
+    };
+    expect(buildCharacterRefs(brief)).toEqual({
+      A: { name: 'Ada', portrait: { key: 'k1' }, trainingImages: [{ key: 'k1' }] },
+    });
+  });
+
+  it('returns an empty map when no cast qualifies', () => {
+    expect(buildCharacterRefs({ cast: [] })).toEqual({});
+    expect(buildCharacterRefs({ cast: [{ slot: 'A', name: 'Ada' }] })).toEqual({});
+  });
+});
+
+describe('matchBackend', () => {
+  const names = ['CogVideoX', 'LTX', 'Wan22'];
+
+  it('maps auto/default/empty to a null value (omit on submit)', () => {
+    expect(matchBackend(names, 'auto')).toEqual({ value: null });
+    expect(matchBackend(names, 'default')).toEqual({ value: null });
+    expect(matchBackend(names, '')).toEqual({ value: null });
+    expect(matchBackend(names, '   ')).toEqual({ value: null });
+    expect(matchBackend(names, undefined)).toEqual({ value: null });
+  });
+
+  it('matches a name case-insensitively (exact wins)', () => {
+    expect(matchBackend(names, 'ltx')).toEqual({ value: 'LTX' });
+    expect(matchBackend(names, 'CogVideoX')).toEqual({ value: 'CogVideoX' });
+  });
+
+  it('falls back to a substring match', () => {
+    expect(matchBackend(names, 'cog')).toEqual({ value: 'CogVideoX' });
+    expect(matchBackend(names, 'wan')).toEqual({ value: 'Wan22' });
+  });
+
+  it('returns an error with the valid options for an unknown backend', () => {
+    const r = matchBackend(names, 'nope');
+    expect(r.value).toBeUndefined();
+    expect(r.error).toContain('Unknown backend `nope`');
+    expect(r.error).toContain('auto, CogVideoX, LTX, Wan22');
+  });
+
+  it('reports "(none reported)" when the registry list is empty', () => {
+    expect(matchBackend([], 'x').error).toContain('(none reported)');
+    expect(matchBackend(undefined, 'x').error).toContain('(none reported)');
+  });
+});
