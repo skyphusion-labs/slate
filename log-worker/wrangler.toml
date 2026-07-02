@@ -2,7 +2,7 @@ name = "slate-logs"
 main = "src/index.ts"
 compatibility_date = "2025-06-14"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = false  # no workers.dev door; self-authenticates + reached by binding/token (defense-in-depth; fleet-chezmoi#46)
+workers_dev = true  # consumed door: slate bot on dischord posts to slate-logs.workers.dev via LOG_WORKER_URL with X-Log-Secret; pin true so every deploy asserts the door OPEN, not closed (slate#51)
 
 [[r2_buckets]]
 binding = "LOGS"
