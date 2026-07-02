@@ -15,7 +15,7 @@
 #     CF_D1_TOKEN              - CF API token with D1:Write permission
 #     CF_AIG_TOKEN             - CF API token for AI Gateway (Anthropic path)
 #     CF_GATEWAY_ENDPOINT      - CF AI Gateway compat URL
-#     SEARCH_WORKER_URL        - vivijure-search Worker base URL
+#     SEARCH_WORKER_URL        - slate-search Worker base URL
 #     SEARCH_SECRET            - shared secret for X-Search-Secret header
 #     CF_R2_ACCESS_ID          - R2 access key (for portrait uploads via LLM API)
 #     CF_R2_SECRET             - R2 secret key

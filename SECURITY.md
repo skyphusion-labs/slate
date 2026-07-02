@@ -35,7 +35,7 @@ Please give us a chance to ship a fix before any public disclosure.
 
 In scope:
 - Secrets/credentials exposed via the bot, Worker, or repository
-- Authentication bypass on the `vivijure-search` Worker (`X-Search-Secret` header)
+- Authentication bypass on the `slate-search` Worker (`X-Search-Secret` header)
 - Prompt injection attacks that cause the bot to exfiltrate secrets or take unintended actions
 - D1 session data exposure or cross-channel data leakage
 - Vectorize knowledge base pollution via unauthenticated writes
@@ -48,7 +48,7 @@ Out of scope:
 ## Security Design Notes
 
 - **Secrets are never committed.** The `.gitignore` excludes `stacks/.env` and all credential files. Cloudflare Worker secrets are set via `wrangler secret put`, not in `wrangler.toml`.
-- **`X-Search-Secret` header** authenticates all requests from the Discord bot to the `vivijure-search` Worker. This should be a long random string.
+- **`X-Search-Secret` header** authenticates all requests from the Discord bot to the `slate-search` Worker. This should be a long random string.
 - **Cloudflare Access service token** (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) gates all requests to the Vivijure API and the skyphusion-llm-public image generation API.
 - **D1 session data** is scoped per Discord channel ID. No cross-channel reads occur.
 - **Image attachments** are fetched directly from Discord's CDN over HTTPS, base64-encoded for the current turn, and never persisted to disk or D1.

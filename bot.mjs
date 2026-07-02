@@ -33,7 +33,7 @@
 //                               When set the main conversation uses Claude via CF AI Gateway.
 //                               Falls back to ollama when unset.
 //   CF_GATEWAY_ENDPOINT         CF AI Gateway compat URL (used to derive the Anthropic base URL).
-//   SEARCH_WORKER_URL           vivijure-search Worker base URL (enables web search + knowledge base)
+//   SEARCH_WORKER_URL           slate-search Worker base URL (enables web search + knowledge base)
 //   SEARCH_SECRET               shared secret for X-Search-Secret header
 //
 // ! commands:
@@ -422,7 +422,7 @@ async function callOllama(system, conversationMessages) {
 }
 
 // ---------------------------------------------------------------------------
-// Search + knowledge tools (vivijure-search Worker)
+// Search + knowledge tools (slate-search Worker)
 // ---------------------------------------------------------------------------
 
 const SEARCH_TOOLS = [
@@ -1316,7 +1316,7 @@ setInterval(async () => {
 }, 30_000);
 
 // ---------------------------------------------------------------------------
-// Knowledge base (via vivijure-search Worker + Vectorize)
+// Knowledge base (via slate-search Worker + Vectorize)
 // ---------------------------------------------------------------------------
 
 async function indexKnowledge(content, title = '', author = '') {

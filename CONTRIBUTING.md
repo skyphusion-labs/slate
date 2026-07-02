@@ -22,7 +22,7 @@ node bot.mjs
 
 There is no unit test suite for the bot (too tightly coupled to live Discord + external APIs). Verify changes by running against a test channel and checking behavior manually.
 
-### vivijure-search Worker
+### slate-search Worker
 
 ```bash
 cd search-worker
@@ -62,7 +62,7 @@ Good contributions:
 - Bug fixes with a clear reproduction case
 - New image model entries in the `IMAGE_MODELS` catalog (alias + full ID + label)
 - Improvements to the `SYSTEM_PROMPT` that make Slate a better creative collaborator
-- Additional search tool integrations in the `vivijure-search` Worker
+- Additional search tool integrations in the `slate-search` Worker
 - Documentation improvements
 
 Less likely to merge:

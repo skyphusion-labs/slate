@@ -32,7 +32,7 @@ projected live from the studio registry, never hardcoded (see `!backend`).
 bot.mjs                  Node 24+ Discord bot (main entry point, ~93KB)
 package.json             Bot deps (@anthropic-ai/sdk, discord.js); scripts: bot, lint
 bot.test.ts              Vitest smoke (imports bot.mjs against mocked env + local workers)
-search-worker/           Cloudflare Worker `vivijure-search`: web search + knowledge base
+search-worker/           Cloudflare Worker `slate-search`: web search + knowledge base
   src/index.ts           Worker source
   wrangler.toml          Bindings: BROWSER, AI, KNOWLEDGE (Vectorize: slate-knowledge)
 log-worker/              Cloudflare Worker `slate-logs`: log sink
@@ -60,7 +60,7 @@ imports `bot.mjs` against mocked tokens; the coverage workflow first brings up `
 and `search-worker` (:8788) via `wrangler dev` so the import path that talks to them resolves. CI is
 GitHub Actions on GitHub-hosted `ubuntu-latest` (public repo, fork-safe): `ci.yml` lints the bot +
 typechecks `search-worker`; `code-coverage.yml` runs the Vitest smoke against the two local workers;
-`deploy.yml` deploys `vivijure-search` and `slate-logs` on a green push to `main`. The bot itself is
+`deploy.yml` deploys `slate-search` and `slate-logs` on a green push to `main`. The bot itself is
 NOT deployed by CI: it is a deliberate host-side Docker step on the `<deploy-host>`.
 
 ## Running (production: the deploy-host stack)
@@ -90,7 +90,7 @@ npx wrangler secret put BRAVE_API_KEY   # and TAVILY_API_KEY, SEARCH_SECRET
   sets `DISCORD_MODEL=claude-sonnet-4-6`; the bot.mjs code default is an ollama model
   (`qwen3.6:27b-ctx8k`), and it falls back to ollama when `CF_AIG_TOKEN` is unset.
 - **Tool-use loop** (up to 5 rounds): `web_search` (Brave), `research` (Tavily), `fetch_page` (CF
-  Browser Rendering), `search_knowledge` (Vectorize) -- all via the `vivijure-search` worker.
+  Browser Rendering), `search_knowledge` (Vectorize) -- all via the `slate-search` worker.
 - **Vision**: image attachments fetched as base64 and passed to Claude as image content blocks (the
   ollama path strips to text).
 - **D1 session state**: `sessions` (channel storyboard + history + briefHistory) and `render_jobs`

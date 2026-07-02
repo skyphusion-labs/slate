@@ -5,7 +5,7 @@ name: deploy
 # Scope: this repo has three runtime pieces --
 #   - the Discord bot (bot.mjs), which runs as a host-side Docker stack on its
 #     host (stacks/compose.prod.yml: ssh + docker compose up). NOT owned by CI.
-#   - search-worker/ -> Cloudflare Worker `vivijure-search`
+#   - search-worker/ -> Cloudflare Worker `slate-search`
 #   - log-worker/    -> Cloudflare Worker `slate-logs`
 # The two Workers (committed wrangler.toml, plain `wrangler deploy`) are the
 # CI-deployable pieces; the bot stays a deliberate host-side step.
@@ -44,7 +44,7 @@ jobs:
           node-version: 22
 
       # search-worker has a committed package-lock.json -> npm ci.
-      - name: Deploy search-worker (vivijure-search)
+      - name: Deploy search-worker (slate-search)
         working-directory: search-worker
         run: |
           npm ci

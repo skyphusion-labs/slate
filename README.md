@@ -214,14 +214,14 @@ Discord channel
       |       |
       |       +-- web_search    --> Brave Search API
       |       +-- research      --> Tavily API (AI-curated, deep)
-      |       +-- fetch_page    --> vivijure-search Worker (CF Browser Rendering)
-      |       +-- search_knowledge --> vivijure-search Worker (Vectorize)
+      |       +-- fetch_page    --> slate-search Worker (CF Browser Rendering)
+      |       +-- search_knowledge --> slate-search Worker (Vectorize)
       |
       +-- Cloudflare D1          (session state: brief, history, render jobs)
       +-- image service          (image generation)
       +-- Vivijure API           (Cast sync, portrait upload, storyboard render)
 
-vivijure-search  (Cloudflare Worker)
+slate-search  (Cloudflare Worker)
   /search        Brave (web) or Tavily (research)
   /fetch         CF Browser Rendering -- puppeteer headless Chrome
   /knowledge/index   embed + store in Vectorize (bge-large-en-v1.5, 1024-dim)
@@ -252,7 +252,7 @@ cp slate.env.example slate.env   # then edit it; at minimum set DISCORD_TOKEN
 ```
 
 The two optional Cloudflare Workers are set up from their own folders when you
-want them: **vivijure-search** ([search-worker/](search-worker)) for web search
+want them: **slate-search** ([search-worker/](search-worker)) for web search
 and the knowledge base, and **slate-logs** ([log-worker/](log-worker)) for log
 shipping. Their keys are documented in
 [docs/configuration.md](docs/configuration.md).
@@ -297,7 +297,7 @@ Image attachments are degraded to a text placeholder in ollama mode (most ollama
 
 **Conrad Rockenhaus** ([SkyPhusion](https://github.com/SkyPhusion)) -- project creator, platform architect, Vivijure founder.
 
-**Claude Sonnet 4.6** (Anthropic) -- operating as *Strummer*, SkyPhusion's AI crew member. Designed and implemented the Slate architecture from an initial Discord-to-ollama relay: CF AI Gateway integration (native Anthropic SDK path), Anthropic tool-use loop, Brave + Tavily + CF Browser Rendering search pipeline, Cloudflare Vectorize knowledge base, Discord vision input, slash command system, D1 session persistence, render submission and polling, character portrait generation and Vivijure Cast sync, `!thumbnail`, `!undo`, and the `vivijure-search` Worker. This project is an example of the SkyPhusion AI-collaborative development model -- human vision, AI execution, shipped together.
+**Claude Sonnet 4.6** (Anthropic) -- operating as *Strummer*, SkyPhusion's AI crew member. Designed and implemented the Slate architecture from an initial Discord-to-ollama relay: CF AI Gateway integration (native Anthropic SDK path), Anthropic tool-use loop, Brave + Tavily + CF Browser Rendering search pipeline, Cloudflare Vectorize knowledge base, Discord vision input, slash command system, D1 session persistence, render submission and polling, character portrait generation and Vivijure Cast sync, `!thumbnail`, `!undo`, and the `slate-search` Worker. This project is an example of the SkyPhusion AI-collaborative development model -- human vision, AI execution, shipped together.
 
 ---
 

@@ -197,15 +197,15 @@ prints the database id.
 ## 6. Web search + knowledge base (optional)
 
 These two settings switch on web search and the `!learn` knowledge base, both
-served by the separate **vivijure-search** Worker (see group 8). Leave them
+served by the separate **slate-search** Worker (see group 8). Leave them
 empty to run Slate without search.
 
 ### `SEARCH_WORKER_URL`
-- **What:** the web address of your deployed vivijure-search Worker.
+- **What:** the web address of your deployed slate-search Worker.
 - **Why:** it is where Slate sends "look this up" and "search my knowledge base"
   requests. Empty means those powers are off.
 - **Where:** the URL Cloudflare gives your deployed Worker.
-- **Example:** `SEARCH_WORKER_URL=https://vivijure-search.example.workers.dev`
+- **Example:** `SEARCH_WORKER_URL=https://slate-search.example.workers.dev`
 
 ### `SEARCH_SECRET`
 - **What:** a shared password Slate sends to the search Worker in the
@@ -246,7 +246,7 @@ screen (and in `DISCORD_LOG`) only.
 
 ---
 
-## 8. The vivijure-search Worker (optional add-on)
+## 8. The slate-search Worker (optional add-on)
 
 This is a separate Cloudflare Worker in [search-worker/](../search-worker). It
 gives Slate web search and a knowledge base. Its settings are Worker **secrets**,

@@ -1,4 +1,4 @@
-// vivijure-search Worker
+// slate-search Worker
 //
 // Endpoints (all require X-Search-Secret header except /health):
 //   GET  /health

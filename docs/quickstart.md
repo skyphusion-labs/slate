@@ -113,7 +113,7 @@ Logs: `docker compose -p slate -f stacks/compose.prod.yml logs -f`.
 
 Two small Cloudflare Workers add extra powers. Neither is required.
 
-- **vivijure-search** ([search-worker/](../search-worker)) -- web search
+- **slate-search** ([search-worker/](../search-worker)) -- web search
   (Brave, Tavily) plus a knowledge base you fill with `!learn`. Set
   `SEARCH_WORKER_URL` + `SEARCH_SECRET` to switch it on.
 - **slate-logs** ([log-worker/](../log-worker)) -- ships Slate logs to an R2
