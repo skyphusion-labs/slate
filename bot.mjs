@@ -323,6 +323,18 @@ async function saveProject(channelId) {
   }
 }
 
+// Per-channel serialization. Brief/history mutations and the background extractBrief all
+// read-modify-write the same shared project object and the same D1 blob; without a queue a
+// fire-and-forget extract can interleave with a command save (or another extract) and clobber it,
+// last-writer-wins. withChannelLock chains a channel's writers so they run one at a time, in order.
+const channelLocks = new Map(); // channelId -> tail promise
+function withChannelLock(channelId, fn) {
+  const prev = channelLocks.get(channelId) ?? Promise.resolve();
+  const run = prev.then(fn, fn);                             // run fn regardless of the prior outcome
+  channelLocks.set(channelId, run.then(() => {}, () => {})); // keep the chain; swallow errors on the tail
+  return run;
+}
+
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
@@ -559,43 +571,57 @@ Notes:
     })
     .join('\n\n');
 
+  // The slow LLM call runs OUTSIDE the per-channel lock so it never blocks a user's next message;
+  // only the read-modify-write of the brief + save happens under the lock, and re-reads the current
+  // (possibly since-mutated) project so a command save that landed mid-extract is not clobbered.
+  let updated;
   try {
     const raw = await callAI(extractPrompt, [
       { role: 'user', content: `Conversation so far:\n\n${convoText}\n\nReturn the updated storyboard brief as a single JSON object now.` },
     ]);
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return;
-    const updated = JSON.parse(match[0]);
+    updated = JSON.parse(match[0]);
+  } catch (e) {
+    log(`[${channelId}] brief extraction error: ${e.message}`);
+    return;
+  }
 
-    // Preserve portraitUrl + castId from existing cast
-    for (const existing of project.brief.cast) {
+  await withChannelLock(channelId, async () => {
+    const p = projects.get(channelId) ?? project;
+
+    // Preserve portraitUrl + castId + portraitKey from existing cast.
+    for (const existing of p.brief.cast) {
       if (!existing.portraitUrl && !existing.castId) continue;
       const m2 = updated.cast?.find(c => c.slot === existing.slot);
       if (!m2) continue;
       if (existing.portraitUrl  && !m2.portraitUrl)  m2.portraitUrl  = existing.portraitUrl;
-      if (existing.castId      && !m2.castId)       m2.castId       = existing.castId;
-      if (existing.portraitKey && !m2.portraitKey)  m2.portraitKey  = existing.portraitKey;
+      if (existing.castId       && !m2.castId)       m2.castId       = existing.castId;
+      if (existing.portraitKey  && !m2.portraitKey)  m2.portraitKey  = existing.portraitKey;
     }
 
     // Preserve any dialogue already set on a shot if the re-extraction dropped it (the extractor
-    // sees recent turns only and may not re-mention an earlier line). Same intent as the cast
-    // portrait/castId preservation above: never lose group-authored content on a partial re-extract.
-    for (const prev of project.brief.scenes) {
+    // sees recent turns only and may not re-mention an earlier line). Never lose group-authored
+    // content on a partial re-extract.
+    for (const prev of p.brief.scenes) {
       if (!prev.dialogue) continue;
       const s2 = updated.scenes?.find(s => s.id === prev.id);
       if (s2 && !s2.dialogue) s2.dialogue = prev.dialogue;
     }
 
-    // Save previous brief for !undo
-    project.briefHistory.push(JSON.parse(JSON.stringify(project.brief)));
-    if (project.briefHistory.length > 10) project.briefHistory.shift();
+    // The extractor schema carries NO render_settings; carry the group's render choices (tier,
+    // backend, title/credit cards, subtitles) across so a routine re-extraction never silently
+    // resets them. Same principle as the cast/dialogue preservation above.
+    updated.render_settings = p.brief.render_settings ?? emptyRenderSettings();
 
-    project.brief = updated;
+    // Save previous brief for !undo.
+    p.briefHistory.push(JSON.parse(JSON.stringify(p.brief)));
+    if (p.briefHistory.length > 10) p.briefHistory.shift();
+
+    p.brief = updated;
     await saveProject(channelId);
-    log(`[${channelId}] brief updated`);
-  } catch (e) {
-    log(`[${channelId}] brief extraction error: ${e.message}`);
-  }
+  });
+  log(`[${channelId}] brief updated`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1076,8 +1102,8 @@ async function submitToVivijure(brief, opts = {}) {
 
   // Dialogue lines: one {shot_id, text} per speaking shot (the studio's caption model is one line
   // per shot). Forwarded so the film.finish subtitle module can time captions to each shot's window.
-  // NOTE: the studio's /api/render/film does not forward dialogue_lines yet (filed as vivijure#296,
-  // backend lane); until that ships these ride along harmlessly and captions activate once it lands.
+  // The studio's /api/render/film forwards dialogue_lines since vivijure#296; captions activate once
+  // a subtitle film.finish module is installed and subtitles are turned on.
   const dialogueLines = brief.scenes
     .filter((s) => s.dialogue && String(s.dialogue).trim())
     .map((s) => ({ shot_id: s.id, text: String(s.dialogue).trim() }));
@@ -1987,14 +2013,19 @@ client.on(Events.MessageCreate, async (message) => {
 
     const reply = await askLLM(channelId, userLabel, imageBlocks);
 
-    const project = await getProject(channelId);
-    // Store text-only in history (image data is too large for D1)
-    const historyText = imageBlocks.length > 0 ? `[${imageBlocks.length} image(s)]\n${userLabel}` : userLabel;
-    project.history.push({ role: 'user',      content: historyText });
-    project.history.push({ role: 'assistant', content: reply });
-    while (project.history.length > CFG.historyLen * 2) project.history.shift();
-    await saveProject(channelId);
+    // Serialize this channel's history mutation + save so two concurrent messages (or an in-flight
+    // extract) cannot interleave-clobber the D1 blob.
+    await withChannelLock(channelId, async () => {
+      const project = await getProject(channelId);
+      // Store text-only in history (image data is too large for D1).
+      const historyText = imageBlocks.length > 0 ? `[${imageBlocks.length} image(s)]\n${userLabel}` : userLabel;
+      project.history.push({ role: 'user',      content: historyText });
+      project.history.push({ role: 'assistant', content: reply });
+      while (project.history.length > CFG.historyLen * 2) project.history.shift();
+      await saveProject(channelId);
+    });
 
+    // Background brief extraction (its own lock guards the commit).
     extractBrief(channelId).catch(e => log(`extractBrief error: ${e.message}`));
 
     log(`-> ${reply.slice(0, 120)}${reply.length > 120 ? '...' : ''}`);
