@@ -32,6 +32,21 @@ jobs:
       - name: Lint bot
         run: node --check bot.mjs
 
+      - name: Install root deps
+        run: npm ci --no-audit --no-fund
+
+      # Real unit tests over the pure helpers in lib.mjs (+ the bot import-smoke).
+      - name: Unit tests
+        run: npx vitest run
+
+      - name: Install log-worker deps
+        working-directory: log-worker
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck log-worker
+        working-directory: log-worker
+        run: npm run typecheck
+
       - name: Install search-worker deps
         working-directory: search-worker
         run: npm ci --no-audit --no-fund
