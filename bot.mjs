@@ -74,6 +74,7 @@ import {
   subtitleEnableField,
   buildCharacterRefs,
   matchBackend,
+  pickAutoMotionBackend,
 } from './lib.mjs';
 
 // ---------------------------------------------------------------------------
@@ -1033,7 +1034,25 @@ async function submitToVivijure(brief, opts = {}) {
     keyframe_config: { quality_tier: quality },
     finish_config:   { 'finish-rife': { interpolate: false, face_restore: 'none' } },
   };
-  if (rs.motion_backend) filmBody.motion_backend = rs.motion_backend;
+  // Motion backend (slate#58): the studio defaults an OMITTED motion_backend to serving[0] (its
+  // ui.order-first motion.backend module, locality-blind), which can be a bound-but-non-operational
+  // local gpu-door -- the film then burns keyframes and dies at assemble. So Slate always sends an
+  // EXPLICIT, serving backend: the group's pick when set, else auto resolved against the live
+  // registry (cloud > own-gpu > door). A registry we cannot read, or one that serves no motion
+  // backend, fails the render loudly here; it never falls back to omitting.
+  if (rs.motion_backend) {
+    filmBody.motion_backend = rs.motion_backend;
+  } else {
+    const registry = await fetchRegistry();
+    if (!registry) {
+      return { ok: false, error: 'I could not reach the studio to choose a render backend. Give it a moment and try again, or set one with `/backend <name>`.' };
+    }
+    const picked = pickAutoMotionBackend(registry);
+    if (picked.error) {
+      return { ok: false, error: `I cannot start this render: ${picked.error}. Set one with \`/backend <name>\` once a backend is available.` };
+    }
+    filmBody.motion_backend = picked.value;
+  }
   const filmTitles = buildFilmTitles(rs);
   if (filmTitles) filmBody.film_titles = filmTitles;
 

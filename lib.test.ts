@@ -7,6 +7,7 @@ import {
   subtitleEnableField,
   buildCharacterRefs,
   matchBackend,
+  pickAutoMotionBackend,
 } from './lib.mjs';
 
 // Real unit tests over the pure helpers extracted from bot.mjs. No Discord client, no network,
@@ -182,3 +183,55 @@ describe('matchBackend', () => {
     expect(matchBackend(undefined, 'x').error).toContain('(none reported)');
   });
 });
+describe('pickAutoMotionBackend', () => {
+  // A GET /api/modules payload: `hooks['motion.backend']` is the serving list the studio already
+  // sorts by ui.order then name; `modules[].ui.locality` classifies each (undeclared = cloud).
+  const reg = (order, localities) => ({
+    hooks: { 'motion.backend': order },
+    modules: order.map((name) =>
+      localities[name] === undefined ? { name } : { name, ui: { locality: localities[name] } },
+    ),
+  });
+
+  it('prefers a cloud module over an order-first local gpu-door (the #58 bug)', () => {
+    const r = pickAutoMotionBackend(reg(['local-gpu', 'alibaba-wan'], { 'local-gpu': 'local', 'alibaba-wan': 'cloud' }));
+    expect(r).toEqual({ value: 'alibaba-wan' });
+  });
+
+  it('prefers the operator own-gpu (byo) over a local door when no cloud serves', () => {
+    const r = pickAutoMotionBackend(reg(['local-gpu', 'own-gpu'], { 'local-gpu': 'local', 'own-gpu': 'byo' }));
+    expect(r).toEqual({ value: 'own-gpu' });
+  });
+
+  it('prefers cloud over byo', () => {
+    const r = pickAutoMotionBackend(reg(['own-gpu', 'alibaba-wan'], { 'own-gpu': 'byo', 'alibaba-wan': 'cloud' }));
+    expect(r).toEqual({ value: 'alibaba-wan' });
+  });
+
+  it('within a class, respects the studio ui.order (first serving name wins)', () => {
+    const r = pickAutoMotionBackend(reg(['alibaba-wan', 'google-veo'], { 'alibaba-wan': 'cloud', 'google-veo': 'cloud' }));
+    expect(r).toEqual({ value: 'alibaba-wan' });
+  });
+
+  it('treats an undeclared locality as cloud', () => {
+    const r = pickAutoMotionBackend(reg(['own-gpu', 'mystery'], { 'own-gpu': 'byo', 'mystery': undefined }));
+    expect(r).toEqual({ value: 'mystery' });
+  });
+
+  it('sends a lone local door when it is the only thing serving (pure self-host)', () => {
+    const r = pickAutoMotionBackend(reg(['local-gpu'], { 'local-gpu': 'local' }));
+    expect(r).toEqual({ value: 'local-gpu' });
+  });
+
+  it('classifies as cloud when the modules array is absent', () => {
+    const r = pickAutoMotionBackend({ hooks: { 'motion.backend': ['x'] } });
+    expect(r).toEqual({ value: 'x' });
+  });
+
+  it('errors (never omits) when nothing serves motion.backend', () => {
+    expect(pickAutoMotionBackend(reg([], {})).error).toContain('no motion backend');
+    expect(pickAutoMotionBackend({}).error).toContain('no motion backend');
+    expect(pickAutoMotionBackend({ hooks: {} }).error).toContain('no motion backend');
+  });
+});
+

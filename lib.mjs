@@ -99,3 +99,35 @@ export function matchBackend(names, input) {
   if (!found) return { error: `Unknown backend \`${input}\`. Options: auto, ${list.join(', ') || '(none reported)'}.` };
   return { value: found };
 }
+
+// Pick the concrete motion.backend module name to send on an AUTO full-render submit (slate#58).
+// The studio defaults an OMITTED motion_backend to serving[0] (its ui.order-first motion.backend
+// module, locality-blind); with the local-consumer doors live that can be a bound-but-non-operational
+// gpu-door (a local door whose ephemeral tunnel URL is not seeded server-side), so the keyframe phase
+// burns and the film dies at assemble ("no clips rendered to assemble"). So Slate resolves auto here
+// and always sends an explicit, serving name instead of relying on the studio default.
+//
+// `registry` is the GET /api/modules payload. Serving names come from hooks["motion.backend"], which
+// the studio already sorts by ui.order then name, so the first match within a class is that class's
+// order-first module. Each serving module is classified by its declared ui.locality (the same field
+// the studio classifies on): "cloud" (or undeclared) = pay-per-render provider, "byo" = the operator's
+// own GPU endpoint, "local" = a homelab door. Preference: a cloud module, then the operator's own GPU,
+// then a local door (the door is chosen only when it is the sole thing serving, e.g. a pure self-host).
+// Returns { value } with the chosen name, or { error } when nothing serves motion.backend (the caller
+// fails the render loudly; it never falls back to omitting).
+export function pickAutoMotionBackend(registry) {
+  const serving = registry?.hooks?.['motion.backend'];
+  const names = Array.isArray(serving) ? serving.filter(Boolean) : [];
+  if (!names.length) {
+    return { error: 'the studio has no motion backend installed to render with' };
+  }
+  const mods = Array.isArray(registry?.modules) ? registry.modules : [];
+  // Undeclared locality classifies as cloud, mirroring the studio's own default.
+  const localityOf = (name) => {
+    const m = mods.find((x) => x && x.name === name);
+    return m?.ui?.locality ?? 'cloud';
+  };
+  const firstOfClass = (cls) => names.find((n) => localityOf(n) === cls);
+  const chosen = firstOfClass('cloud') ?? firstOfClass('byo') ?? firstOfClass('local') ?? names[0];
+  return { value: chosen };
+}
