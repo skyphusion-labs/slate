@@ -2,15 +2,14 @@ name: image
 
 # Build the Slate bot image and push it to GHCR on a version tag.
 #
-# The Discord bot (bot.mjs) runs as a Docker stack on dischord, deployed from
-# fleet-chezmoi (system/stacks/dischord/slate/). This workflow produces the
-# immutable, versioned image that stack pins -- replacing the old anti-pattern
-# of bind-mounting /root/dev + running `npm ci` at container start
-# (fleet-chezmoi#170).
+# The Discord bot (bot.mjs) runs as a Docker stack on the stack host, deployed
+# from the fleet IaC repo. This workflow produces the immutable, versioned image
+# that stack pins -- replacing the old anti-pattern of bind-mounting the working
+# tree + running `npm ci` at container start.
 #
 # Trigger: push a SemVer tag (e.g. v0.2.0). The image is tagged with the clean
 # version (0.2.0), the major.minor (0.2), and the commit sha. NO :latest -- the
-# fleet-chezmoi compose pins an explicit version so a redeploy is deterministic.
+# fleet IaC compose pins an explicit version so a redeploy is deterministic.
 # workflow_dispatch allows a manual rebuild of an existing ref.
 #
 # Runner: GitHub-hosted ubuntu-latest (PUBLIC repo -> fork-safe, per fleet CI
