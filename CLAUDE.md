@@ -61,22 +61,32 @@ and `search-worker` (:8788) via `wrangler dev` so the import path that talks to 
 GitHub Actions on GitHub-hosted `ubuntu-latest` (public repo, fork-safe): `ci.yml` lints the bot +
 typechecks `search-worker`; `code-coverage.yml` runs the Vitest smoke against the two local workers;
 `deploy.yml` deploys `slate-search` and `slate-logs` on a green push to `main`. The bot itself is
-NOT deployed by CI: it is a deliberate host-side Docker step on the `<deploy-host>`.
+NOT deployed by CI on push: its versioned image is built on a `v*` tag (`image.yml`) and rolled out
+via the fleet IaC on the stack host (see "Running (production)" below).
 
-## Running (production: the deploy-host stack)
+## Running (production: the bot stack)
+
+The bot (`bot.mjs`) runs as a Docker stack on the stack host, deployed by IaC. There is no manual
+`rsync` of the working tree and no `npm ci` at container start: the container is pinned to an
+immutable, versioned image built from a git tag, the pin lives in the fleet IaC repo, and the stack
+host pulls that image and recreates the container. (The two Cloudflare Workers are separate:
+`deploy.yml` auto-deploys `slate-search` and `slate-logs` on a green push to `main`, per "Verifying
+changes" above; only the bot follows the tag-driven flow below.)
+
+Release and deploy the bot:
 
 ```bash
-# Initial setup on the `<deploy-host>`
-ssh <deploy-user>@<deploy-host> "
-  cd ~/dev && git clone git@github.com:skyphusion-labs/slate.git
-  cp ~/dev/slate/stacks/.env.example ~/dev/slate/stacks/.env   # then fill in secrets
-  cd slate/stacks && docker compose -p slate -f compose.prod.yml up -d
-"
-
-# Redeploy after code changes
-rsync -az ~/dev/slate/ <deploy-user>@<deploy-host>:/root/dev/slate/ --exclude node_modules --exclude .git --exclude stacks/.env
-ssh <deploy-user>@<deploy-host> "docker compose -p slate -f ~/dev/slate/stacks/compose.prod.yml up -d --force-recreate slate"
+# 1. Cut a release on a branch: bump package.json "version" + add a CHANGELOG.md entry, open a PR.
+# 2. Merge to main.
+# 3. Tag the release commit and push the tag (SemVer vX.Y.Z):
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
+
+Pushing the `vX.Y.Z` tag triggers `image.yml`, which builds the bot image and pushes it to GHCR
+(`ghcr.io/skyphusion-labs/slate`) tagged with the clean version (`0.2.1`), the major.minor (`0.2`),
+and the commit sha. There is no `:latest`, so a redeploy is deterministic. To roll it out, bump the
+pinned image version in the fleet IaC repo; the stack host pulls the new image and recreates the
+container.
 
 `search-worker` (Vectorize, one-time) and the worker secrets are set via wrangler:
 ```bash
