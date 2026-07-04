@@ -3,7 +3,20 @@
 Notable changes per release. SemVer-style (pre-1.0: PATCH for fixes / backend-only tweaks, MINOR
 for new features). Newest first.
 
-## v0.2.0 (unreleased)
+## v0.2.1
+
+- **Explicit motion backend on full renders** (#58) -- Slate now always sends an explicit, serving
+  `motion_backend` on a full render instead of omitting it on `auto` and letting the studio default
+  to its `ui.order`-first `motion.backend` module (locality-blind). With the local-consumer doors
+  live that default could be a bound-but-non-operational local gpu-door, so the film burned keyframes
+  and died deep at assemble (`no clips rendered to assemble`). On `auto`, Slate resolves the choice
+  against the live registry (`GET /api/modules`), preferring a cloud module, then the operator's own
+  GPU, then a local door; a registry it cannot read, or one that serves no motion backend, fails the
+  render loudly rather than silently omitting. Aligns the Slate caller with the vivijure #500
+  submit-time preflight.
+
+## v0.2.0
+
 
 The assistant gains render range. Slate can now carry the group's full finishing choices to the
 studio API, so the web control panel is not needed to render a film:
