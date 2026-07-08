@@ -9,14 +9,14 @@
     "lint": "node --check bot.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.55",
+    "@anthropic-ai/sdk": "^0.110",
     "discord.js": "^14"
   },
   "engines": {
     "node": ">=24"
   },
   "devDependencies": {
-    "@vitest/coverage-istanbul": "^4.1.9",
-    "vitest": "^4.1.10"
+    "@vitest/coverage-istanbul": "^4.1.10",
+    "vitest": "^4.1.9"
   }
 }
