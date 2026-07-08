@@ -9,7 +9,7 @@
     "lint": "node --check bot.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.55",
+    "@anthropic-ai/sdk": "^0.110",
     "discord.js": "^14"
   },
   "engines": {
