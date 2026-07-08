@@ -30,7 +30,7 @@ jobs:
 
       - name: Start Local Log Worker microservice
         run: |
-          cd log-worker && npm install
+          cd log-worker && npm ci --no-audit --no-fund
           npx wrangler dev --port 8787 &
 
       - name: Start Local Search Worker microservice

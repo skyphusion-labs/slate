@@ -41,7 +41,7 @@ jobs:
 
       - name: Install log-worker deps
         working-directory: log-worker
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Typecheck log-worker
         working-directory: log-worker
