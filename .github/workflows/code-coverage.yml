@@ -35,7 +35,7 @@ jobs:
 
       - name: Start Local Search Worker microservice
         run: |
-          cd search-worker && npm install
+          cd search-worker && npm ci --no-audit --no-fund
           npx wrangler dev --port 8788 &
 
       - name: Wait for Mesh Workers to be ready
