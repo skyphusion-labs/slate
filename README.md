@@ -320,6 +320,12 @@ Slate is the Discord front door to Vivijure, so the studio content rules apply h
 
 ---
 
+## Who this is for
+
+Filmmakers and Discord communities who want a writers' room in chat: develop a storyboard collaboratively, then hand the bundle to [Vivijure Studio](https://github.com/skyphusion-labs/vivijure).
+
+**Vivijure:** https://vivijure.com · **Skyphusion Labs:** https://skyphusion.org
+
 ## Support
 
 Questions, bugs, or ideas? Start with this repo's [GitHub Issues](../../issues); see

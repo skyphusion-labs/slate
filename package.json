@@ -4,6 +4,20 @@
   "private": true,
   "type": "module",
   "description": "Slate -- Vivijure Screenwriter's Assistant for Discord",
+  "homepage": "https://vivijure.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/skyphusion-labs/slate.git"
+  },
+  "keywords": [
+    "discord-bot",
+    "screenwriting",
+    "filmmaking",
+    "vivijure",
+    "llm",
+    "storyboard",
+    "ai-assistant"
+  ],
   "scripts": {
     "bot": "node bot.mjs",
     "lint": "node --check bot.mjs"
