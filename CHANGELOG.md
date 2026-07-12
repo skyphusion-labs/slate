@@ -5,6 +5,20 @@ for new features). Newest first.
 
 ## Unreleased
 
+## v0.4.3 (2026-07-12)
+
+- **fix(chat): restore the pre-#86 conversational posture (#84).** The v0.3.0 control-panel API-parity
+  work (#86) ballooned the assistant's SYSTEM_PROMPT command list from ~10 film-creation commands to
+  25+, including "call any studio API route (/api help lists all 69)", a route-conformance matrix, and
+  install-config knobs. That made the brain behave like a control-panel operator instead of a creative
+  collaborator -- which is why it stopped proposing shot breakdowns (so the extractor got no shots ->
+  scenes:0) and felt tool-like. The extractBrief prompt itself was UNCHANGED by #86; the regression was
+  the tool-shaped posture. Trimmed the command block back to the lean, conversation-first set (portrait,
+  cast/bind reuse, finishing touches, render, undo/reset), explicitly de-emphasized the control-panel
+  surface ("never steer someone there; a tool-shaped Slate is just a worse control panel"), and kept the
+  cast-awareness (v0.4.1) + shot-breakdown behaviour (v0.4.2). The power-user commands still work; they
+  are just no longer the interface the brain leads with.
+
 ## v0.4.2 (2026-07-12)
 
 - **fix(brief): the assistant now BUILDS the storyboard from a plain-English idea (#84).** `extractBrief`
