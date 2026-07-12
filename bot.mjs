@@ -111,6 +111,7 @@ import {
   resolveCastMember,
   loraStatusLabel,
   pickAutoMotionBackend,
+  pickAutoBind,
 } from './lib.mjs';
 import {
   commandAvailability,
@@ -1000,14 +1001,12 @@ async function fetchCastCatalog(force = false) {
   }
 }
 
-async function bindSlotToStudioCast(brief, slot, query) {
-  const catalog = await fetchCastCatalog();
-  const member = resolveCastMember(catalog, query);
-  if (!member) return { ok: false, error: `No studio character matches \`${query}\`. Run \`!cast\` to see the library.` };
-
+// Bind a storyboard slot to a resolved studio cast member: set the binding (so cast_loras carries
+// the trained LoRA on render) and hydrate the inline entry from the member (name/bible/portrait) so
+// the render bundle reuses the member's portrait + refs. Shared by /bind and the #84 auto-bind path.
+function applyCastBinding(brief, slot, member) {
   if (!brief.cast_bindings || typeof brief.cast_bindings !== 'object') brief.cast_bindings = {};
   brief.cast_bindings[slot] = member.id;
-
   let entry = brief.cast.find((c) => c.slot === slot);
   if (!entry) {
     entry = { slot, name: member.name, prompt: member.bible || '' };
@@ -1019,7 +1018,14 @@ async function bindSlotToStudioCast(brief, slot, query) {
   entry.castId = member.id;
   entry.bound = true;
   if (member.portrait_key) entry.portraitKey = member.portrait_key;
+  return entry;
+}
 
+async function bindSlotToStudioCast(brief, slot, query) {
+  const catalog = await fetchCastCatalog();
+  const member = resolveCastMember(catalog, query);
+  if (!member) return { ok: false, error: `No studio character matches \`${query}\`. Run \`!cast\` to see the library.` };
+  applyCastBinding(brief, slot, member);
   const lora = loraStatusLabel(member.lora_status);
   return {
     ok: true,
@@ -1028,17 +1034,57 @@ async function bindSlotToStudioCast(brief, slot, query) {
   };
 }
 
+// #84 core fix: make REUSE the default. For each named, still-inline (unbound, not-yet-created) cast
+// slot, if its NAME exactly matches a single studio cast member, auto-bind it -- so the natural flow
+// (describe a character / plan a storyboard) reuses a trained character's LoRA instead of minting a
+// fresh generic one. Never silent: returns what it bound + any ambiguous names for the caller to
+// surface. Ambiguous (>1 same-name row) is surfaced, NEVER auto-picked. `slots` optionally limits the
+// scan (the /portrait path passes one slot); default scans every inline cast entry.
+async function autoBindUnboundNamedCast(brief, slots = null) {
+  const bound = [];
+  const ambiguous = [];
+  if (!CFG.vivijureUrl || !CFG.studioApiToken) return { bound, ambiguous };
+  const want = slots ? new Set(slots) : null;
+  const candidates = (brief.cast || []).filter((c) =>
+    (!want || want.has(c.slot)) &&
+    !brief.cast_bindings?.[c.slot] &&
+    !c.castId,
+  );
+  if (!candidates.length) return { bound, ambiguous };
+  const catalog = await fetchCastCatalog();
+  for (const c of candidates) {
+    const r = pickAutoBind(catalog, c.name);
+    if (r.status === 'bound') {
+      applyCastBinding(brief, c.slot, r.member);
+      bound.push({ slot: c.slot, member: r.member });
+    } else if (r.status === 'ambiguous') {
+      ambiguous.push({ slot: c.slot, name: c.name, matches: r.matches });
+    }
+  }
+  return { bound, ambiguous };
+}
+
+// Honest surface for an auto-bind result (never silent -- the group sees the reuse / the ambiguity).
+function formatAutoBindNotice({ bound, ambiguous }) {
+  const lines = [];
+  for (const b of bound) {
+    lines.push(`Matched existing **${b.member.name}** (${loraStatusLabel(b.member.lora_status)}) for slot **${b.slot}** -- reusing their trained likeness. \`/unbind ${b.slot}\` for a new one.`);
+  }
+  for (const a of ambiguous) {
+    const ids = a.matches.map((m) => `\`${m.id.slice(0, 8)}\`(${loraStatusLabel(m.lora_status)})`).join(', ');
+    lines.push(`Multiple studio characters named **${a.name}** for slot **${a.slot}**: ${ids}. Pick one with \`/bind ${a.slot} <id>\`.`);
+  }
+  return lines.join('\n');
+}
+
 function unbindSlot(brief, slot) {
   if (!brief.cast_bindings) return false;
   const had = !!brief.cast_bindings[slot];
   delete brief.cast_bindings[slot];
+  // Drop the bound flag; keep castId (a session-created member stays reusable this brief; a pure
+  // studio bind leaves castId on the studio member, harmless once the binding is gone).
   const entry = brief.cast.find((c) => c.slot === slot);
-  if (entry) {
-    delete entry.bound;
-    if (entry.castId && entry.bound !== true) {
-      // keep castId if Slate created it this session; only clear when it was a pure bind
-    }
-  }
+  if (entry) delete entry.bound;
   return had;
 }
 
@@ -1302,6 +1348,25 @@ async function submitToVivijure(brief, opts = {}) {
 
   if (Object.keys(castLoras).length) filmBody.cast_loras = castLoras;
 
+  // Keyframes-only reroute: /api/render/film (hStartFilm) has NO keyframes-only mode -- it always runs
+  // the full keyframe->clips->assemble chain and REQUIRES a motion backend, so a keyframes-only film
+  // body (no motion_backend) 400s at its motion gate. /api/storyboard/render (hSubmitRender) honors
+  // keyframesOnly (SDXL keyframes, no i2v, no motion backend) and resolves the SAME cast_loras. The job
+  // is a shared film-* id, pollable via the same /api/render/film/:id the poll loop already uses.
+  if (keyframesOnly) {
+    const res = await studioSubmitStoryboardRender({
+      bundleKey,
+      scenes: filmBody.scenes,
+      qualityTier: quality,
+      castLoras,
+      keyframesOnly: true,
+    }, authHeaders);
+    if (!res.ok) {
+      return { ok: false, error: friendlyHttpError(res.status, res.raw, 'the studio', 'start the keyframes-only render') };
+    }
+    return { ok: true, jobId: res.data?.jobId, status: res.data?.status, quality, trims };
+  }
+
   const filmRes = await postStudioJson(`${CFG.vivijureUrl}/api/render/film`,
     { 'Content-Type': 'application/json', ...authHeaders }, JSON.stringify(filmBody));
   if (!filmRes.ok) {
@@ -1310,6 +1375,17 @@ async function submitToVivijure(brief, opts = {}) {
   }
   const film = await filmRes.json();
   return { ok: true, jobId: film.film_id, status: film.phase, quality, trims };
+}
+
+// POST /api/storyboard/render (keyframes-only reroute helper). Kept local to the render path; returns
+// the studioRequest-shaped { ok, status, data, raw }.
+async function studioSubmitStoryboardRender(body, authHeaders) {
+  const r = await postStudioJson(`${CFG.vivijureUrl}/api/storyboard/render`,
+    { 'Content-Type': 'application/json', ...authHeaders }, JSON.stringify(body));
+  const raw = await r.text().catch(() => '');
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch { /* non-json */ }
+  return { ok: r.ok, status: r.status, data, raw };
 }
 
 // Issue #17: a multi-character film needs a characterRefs entry per referenced character, or the
@@ -1496,6 +1572,14 @@ function looksLikeShipIntent(text) {
 // outcome through `say` (a channel.send / editReply callback) so both the ! and / paths reuse one
 // code path. Returns true on a successful submit. Voice lives in the strings here.
 async function runSubmit(brief, channelId, quality, imageModel, say) {
+  // #84: make reuse the default. Before ref-gen/submit, bind any named-but-inline cast slot whose
+  // name matches a trained studio member, so the render carries cast_loras (real likeness) instead of
+  // a fresh generic character. Surfaced to the group; ambiguous names are shown, never auto-picked.
+  const autobind = await autoBindUnboundNamedCast(brief).catch(() => ({ bound: [], ambiguous: [] }));
+  if (autobind.bound.length || autobind.ambiguous.length) {
+    if (channelId) await saveProject(channelId).catch(() => {});
+    await say(formatAutoBindNotice(autobind));
+  }
   const refs = await ensureCharacterRefs(brief, channelId, imageModel).catch(() => ({ ok: true, generated: [] }));
   if (!refs.ok) {
     await say(`Hold on -- ${refs.missing.join(' and ')} ${refs.missing.length > 1 ? "don't" : "doesn't"} have a look yet, and I can't render a character I can't picture. Describe them (or run \`!portrait\`) and I'll fold them in.`);
@@ -1940,6 +2024,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
           project.brief.cast.push(castEntry);
         } else if (customPrompt) {
           castEntry.prompt = customPrompt;
+        }
+
+        // #84: if this slot's name matches a trained studio character, reuse it (bind) instead of
+        // generating a fresh generic portrait. Surfaced; /unbind to override.
+        const abP = await autoBindUnboundNamedCast(project.brief, [slotArg]).catch(() => ({ bound: [], ambiguous: [] }));
+        if (abP.bound.length || abP.ambiguous.length) {
+          await saveProject(channelId);
+          await interaction.reply(formatAutoBindNotice(abP));
+          break;
         }
 
         await interaction.deferReply();
@@ -2526,6 +2619,14 @@ client.on(Events.MessageCreate, async (message) => {
       project.brief.cast.push(castEntry);
     } else if (customPrompt) {
       castEntry.prompt = customPrompt;
+    }
+
+    // #84: reuse a trained studio character on an exact name match instead of a fresh portrait.
+    const abL = await autoBindUnboundNamedCast(project.brief, [slotArg]).catch(() => ({ bound: [], ambiguous: [] }));
+    if (abL.bound.length || abL.ambiguous.length) {
+      await saveProject(channelId);
+      await message.reply(formatAutoBindNotice(abL)).catch(() => {});
+      return;
     }
 
     const activeModel = IMAGE_MODELS.find(m => m.id === project.imageModel) ?? IMAGE_MODELS[0];

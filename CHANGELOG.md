@@ -5,6 +5,22 @@ for new features). Newest first.
 
 ## Unreleased
 
+## v0.4.0 (2026-07-12)
+
+- **Reuse trained studio cast by name (#84)** -- the natural flow (describe a character / `!portrait`
+  / plan a storyboard) now AUTO-BINDS a cast slot to an existing studio character on an exact
+  (case-insensitive) name match, so the render carries that character's trained LoRA (`cast_loras`)
+  instead of minting a fresh generic member every session. Surfaced to the group (never silent);
+  ambiguous same-name rows are shown for `/bind <slot> <id>`, never auto-picked. Closes the "builds
+  from scratch / paste the description by hand" gap and stops duplicate-member proliferation. `/bind`
+  stays as the explicit override, `/unbind` opts back out to a fresh character.
+- **fix(render): keyframes-only reroute** -- a keyframes-only render now POSTs to
+  `/api/storyboard/render` (which honors `keyframesOnly`; SDXL keyframes, no motion backend) instead
+  of `/api/render/film` (no keyframes-only mode -> 400 at the motion gate). Same `cast_loras`
+  resolution, same pollable `film-*` job.
+- **fix(cast): unbindSlot** -- drop the dead post-delete branch; clear only the `bound` flag (keep
+  `castId` so a session-created member stays reusable this brief).
+
 ## v0.3.0 (2026-07-12)
 
 - **Full studio API parity** -- `studio.mjs` HTTP client for all 68 Vivijure CONTRACT routes;
