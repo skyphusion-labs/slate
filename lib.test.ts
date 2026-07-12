@@ -13,6 +13,7 @@ import {
   matchBackend,
   pickAutoMotionBackend,
   pickAutoBind,
+  buildCastContextBlock,
 } from './lib.mjs';
 
 // Real unit tests over the pure helpers extracted from bot.mjs. No Discord client, no network,
@@ -329,5 +330,34 @@ describe("pickAutoBind (#84 auto-reuse of trained studio cast)", () => {
   it("skips a generic placeholder slot name", () => {
     expect(pickAutoBind(catalog, "Character A").status).toBe("skip");
     expect(pickAutoBind(catalog, "").status).toBe("skip");
+  });
+});
+
+describe("buildCastContextBlock (#84 cast-blind brain fix)", () => {
+  const catalog = [
+    { id: "w", name: "Wren", lora_status: "ready", voice_id: "asteria" },
+    { id: "s", name: "Salvage Robot", lora_status: "ready" },
+  ];
+  it("lists the studio roster with LoRA readiness", () => {
+    const out = buildCastContextBlock({ cast: [], cast_bindings: {} }, catalog);
+    expect(out).toContain("Wren -- LoRA ready");
+    expect(out).toContain("Salvage Robot -- LoRA ready");
+    expect(out).toContain("voice asteria");
+  });
+  it("marks a bound slot as BOUND and an inline slot as auto-bind", () => {
+    const brief = {
+      cast: [{ slot: "A", name: "Wren" }, { slot: "B", name: "Nova" }],
+      cast_bindings: { A: "w" },
+    };
+    const out = buildCastContextBlock(brief, catalog);
+    expect(out).toMatch(/A: Wren -- BOUND/);
+    expect(out).toMatch(/B: Nova -- inline \(auto-binds/);
+  });
+  it("returns empty string when there is nothing to show", () => {
+    expect(buildCastContextBlock({ cast: [], cast_bindings: {} }, [])).toBe("");
+  });
+  it("tells the brain it can see the cast (anti-confabulation)", () => {
+    expect(buildCastContextBlock({ cast: [], cast_bindings: {} }, catalog))
+      .toContain("NEVER tell the user to run a command");
   });
 });

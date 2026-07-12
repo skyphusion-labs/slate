@@ -5,6 +5,21 @@ for new features). Newest first.
 
 ## Unreleased
 
+## v0.4.1 (2026-07-12)
+
+- **fix(chat): the assistant brain can now see the studio cast (#84).** `askLLM` injected only the
+  static system prompt + chat history, so the brain was BLIND to the studio cast library and the
+  current storyboard bindings. It confabulated ("I don't have a direct view into your saved cast
+  library"), told users to run `!cast` (whose output it never ingests), and looped -- a real user
+  could bind a trained character and still never get the brain to acknowledge it, so they never
+  reached a render. Now the live cast roster (name + LoRA readiness + voice) and the current cast
+  slots + bindings are injected into the brain every turn, so it reasons about reuse instead of
+  denying it can see the cast.
+- **SYSTEM_PROMPT:** the brain is told it CAN see the cast (provided every turn), must not tell users
+  to run a command to "show" it, and the command list is now slash-first (the `!` prefix still works).
+- **fix(copy): slash-first prompts** -- the bind-not-found and refs-missing replies now point at
+  `/cast` / `/portrait` (was `!cast` / `!portrait`).
+
 ## v0.4.0 (2026-07-12)
 
 - **Reuse trained studio cast by name (#84)** -- the natural flow (describe a character / `!portrait`

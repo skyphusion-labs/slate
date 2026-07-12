@@ -112,6 +112,7 @@ import {
   loraStatusLabel,
   pickAutoMotionBackend,
   pickAutoBind,
+  buildCastContextBlock,
 } from './lib.mjs';
 import {
   commandAvailability,
@@ -458,31 +459,32 @@ Your role:
 
 You also help the group decide how the film is finished and rendered -- which backend (our own GPU vs cloud), the quality tier, whether to open on a title card and roll credits. Offer these as a collaborator would: suggest, ask, and act on the group's behalf. You never run the render yourself; you carry the group's choices to the studio.
 
-The storyboard brief updates automatically in the background. Available commands:
-- !brief / /brief               -- see the current storyboard state (and render settings)
-- !portrait A [desc] / /portrait -- generate a character portrait for slot A, B, C, or D
-- !thumbnail <scene-id> / /thumbnail -- generate a visual thumbnail for a scene
-- !tier / /tier -- quality tier; !keyframe / !backend -- pick modules (only when installed)
-- !keyframes-only on|off -- SDXL preview without motion (when keyframe module installed)
-- !hooks / !commands -- live hook catalog and module-gated command list
-- !config / !install-config -- per-render and install-scoped module knobs
-- !autodirect -- auto-direct shots via plan.enhance (when installed)
-- !titlecard <title> [| sub] [|| credits] / /titlecard -- set the opening title + end credits
-- !subtitles on|off / /subtitles -- caption spoken dialogue in the rendered film
-- !render [tier] / /render      -- submit to Vivijure for rendering (tier defaults to the project's)
+The storyboard brief updates automatically in the background. At the END of this prompt you are given, EVERY turn, the CURRENT storyboard cast + bindings and the full studio cast library -- READ and USE them. You CAN see the cast: never tell the user to run a command to "show you" the cast or a character, and never claim you cannot see their studio cast. Commands (slash-first; the legacy ! prefix still works):
+- /brief -- see the current storyboard state (and render settings)
+- /portrait A [desc] -- generate a character portrait for slot A, B, C, or D
+- /thumbnail <scene-id> -- generate a visual thumbnail for a scene
+- /tier -- quality tier; /backend, /keyframe -- pick modules (only when installed)
+- /keyframes-only on|off -- SDXL preview without motion (when keyframe module installed)
+- /hooks, /commands -- live hook catalog and module-gated command list
+- /config, /install-config -- per-render and install-scoped module knobs
+- /autodirect -- auto-direct shots via plan.enhance (when installed)
+- /titlecard <title> [| sub] [|| credits] -- set the opening title + end credits
+- /subtitles on|off -- caption spoken dialogue in the rendered film
+- /render [tier] -- submit to Vivijure for rendering (tier defaults to the project's)
 
 When the group wants subtitles, remember they caption spoken DIALOGUE: capture each shot's line as it
 is decided (in the brief's per-scene "dialogue"), and be honest that captions show once there are
 lines to show.
-- !undo / /undo                 -- roll back the last brief update
-- !learn <text or URL> / /learn -- add a film reference to the knowledge base
-- !cast / /cast -- list the studio cast library; !bind <slot> <name> to reuse trained characters
-- !train <slot> / /train -- train a LoRA; !preflight / /preflight before rendering
-- !renders / /renders -- render history; !config / /config for module knobs
-- !api <action> [args] / /api -- call any Vivijure studio API route (!api help lists all 69)
-- !conformance -- route-to-command conformance matrix (69 routes)
-- !importcast / !upload / !audioupload / !addref / !addsource -- attach files for cast import and uploads
-- !reset / /reset               -- clear the project and start fresh`;
+- /undo -- roll back the last brief update
+- /learn <text or URL> -- add a film reference to the knowledge base
+- /cast -- list the studio cast library; /bind <slot> <name> to reuse a trained character. You already SEE the cast below, so when a user names an existing character just confirm you will reuse them -- a named character also auto-binds to a matching studio character at render.
+- /unbind <slot> -- turn a bound slot back into a fresh character
+- /train <slot> -- train a LoRA; /preflight before rendering
+- /renders -- render history; /config for module knobs
+- /voices, /voice <slot> <id> -- list and assign per-character dialogue voices
+- /api <action> [args] -- call any Vivijure studio API route (/api help lists all 69)
+- /importcast, /upload, /audioupload, /addref, /addsource -- attach files for cast import and uploads
+- /reset -- clear the project and start fresh`;
 
 // ---------------------------------------------------------------------------
 // LLM helpers
@@ -629,7 +631,14 @@ async function askLLM(channelId, userText, imageBlocks = []) {
     ? [...imageBlocks, { type: 'text', text: userText }]
     : userText;
 
-  return callAI(SYSTEM_PROMPT, [
+  // #84 chat fix: the brain is otherwise blind to the studio cast + current bindings and confabulates
+  // ("I can't see your cast"). Inject the live cast roster + brief bindings into the system prompt every
+  // turn so it can reason about reuse. Cheap (fetchCastCatalog is cached); studio-less installs skip it.
+  const catalog = await fetchCastCatalog().catch(() => []);
+  const castContext = buildCastContextBlock(project.brief, catalog);
+  const system = castContext ? `${SYSTEM_PROMPT}\n\n${castContext}` : SYSTEM_PROMPT;
+
+  return callAI(system, [
     ...project.history,
     { role: 'user', content: userContent },
   ]);
@@ -1024,7 +1033,7 @@ function applyCastBinding(brief, slot, member) {
 async function bindSlotToStudioCast(brief, slot, query) {
   const catalog = await fetchCastCatalog();
   const member = resolveCastMember(catalog, query);
-  if (!member) return { ok: false, error: `No studio character matches \`${query}\`. Run \`!cast\` to see the library.` };
+  if (!member) return { ok: false, error: `No studio character matches \`${query}\`. Run \`/cast\` to see the library.` };
   applyCastBinding(brief, slot, member);
   const lora = loraStatusLabel(member.lora_status);
   return {
@@ -1582,7 +1591,7 @@ async function runSubmit(brief, channelId, quality, imageModel, say) {
   }
   const refs = await ensureCharacterRefs(brief, channelId, imageModel).catch(() => ({ ok: true, generated: [] }));
   if (!refs.ok) {
-    await say(`Hold on -- ${refs.missing.join(' and ')} ${refs.missing.length > 1 ? "don't" : "doesn't"} have a look yet, and I can't render a character I can't picture. Describe them (or run \`!portrait\`) and I'll fold them in.`);
+    await say(`Hold on -- ${refs.missing.join(' and ')} ${refs.missing.length > 1 ? "don't" : "doesn't"} have a look yet, and I can't render a character I can't picture. Describe them (or run \`/portrait\`) and I'll fold them in.`);
     return false;
   }
   if (refs.generated?.length) {
