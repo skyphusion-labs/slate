@@ -90,12 +90,15 @@ In your Discord channel, just start talking about a film idea. Slate joins in
 as a co-writer and quietly builds a storyboard in the background. Useful
 commands:
 
+- `!commands` -- see what is live on your studio (module-gated list).
 - `!brief` -- show the storyboard so far.
 - `!portrait A a weathered detective in a trench coat` -- draw a character.
-- `!render` -- when you are ready, Slate reads back the settings, then ships the
-  film to your Studio on "ship it".
+- `!tier draft` and `!backend own-gpu` -- pick render settings (when modules are installed).
+- `!preflight` -- validate before spending.
+- `!render` -- when ready, Slate reads back settings, then ships on `ship it`.
 
-The full command list is in the main [README](../README.md).
+The full command reference is in **[docs/commands.md](commands.md)** (every hook,
+cast workflow, upload, and studio API route).
 
 ## Run it in Docker
 

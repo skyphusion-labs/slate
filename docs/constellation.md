@@ -59,7 +59,9 @@ flowchart TD
 ## How to read the map
 
 - **You** start at the top. You either chat with the **slate** bot in Discord, or you open the
-  **Studio web page**. Both lead to the same place: the Studio.
+  **Studio web page**. Both lead to the same place: the Studio. Slate mirrors the web control
+  panel: render settings, cast workflows, module hooks, and all studio API routes are available
+  from Discord (`!commands` shows what your installed modules support).
 - **The Studio** (this control plane) owns your work and decides what runs. It does not render
   video itself. It hands the heavy work to a **module**.
 - **A module** is a small, opt-in worker that does one job: make a video clip, upscale it, add a

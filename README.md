@@ -67,23 +67,31 @@ flowchart TD
 ```
 
 Slate holds no render logic of its own. It writes and plans; the Studio is the
-single source of truth and runs the render from there. What Slate decides in
-conversation and carries to the Studio at submit time:
+single source of truth and runs the render from there. **Slate has full control-panel parity:**
+every hook, cast workflow, render setting, and studio API route the web UI exposes is reachable
+from Discord. What the group decides in conversation and carries to the Studio at submit time:
 
-- **Render backend** -- your own GPU vs cloud (`!backend`).
-- **Quality tier** -- draft / standard / final, projected live from the studio
-  registry (`!render`).
-- **Subtitles** -- captions the film's spoken dialogue (`!subtitles`).
+- **Quality tier** -- draft / standard / final (`!tier`), projected from the registry.
+- **Keyframe module** -- pick the `keyframe` hook (`!keyframe`), when installed.
+- **Motion / i2v backend** -- own GPU, local door, or cloud module (`!backend`), when installed.
+- **Keyframes-only preview** -- SDXL without motion (`!keyframes-only`), when a keyframe module exists.
+- **Module config knobs** -- per-render and install-scoped (`!config`, `!install-config`).
+- **Subtitles** -- captions the film's spoken dialogue (`!subtitles`), when a subtitle module exists.
 - **Title + credit cards** -- opening title and end credits (`!titlecard`).
-- **Cast** -- character portraits generated and synced to the studio Cast.
+- **Cast** -- reuse studio characters, LoRA training, voices (`!cast`, `!bind`, `!train`, ...).
+- **Score beds** -- music or narration (`!score`), when score modules exist.
+- **Everything else** -- `!api` dispatches all 69 studio HTTP routes (68 CONTRACT + control-panel supplements); attachment commands handle uploads.
 
-Backend names and quality tiers are projected live from the studio registry
-(`GET /api/modules`), never hardcoded in a parallel list.
+Backend names, quality tiers, and command availability are projected live from the studio registry
+(`GET /api/modules`), never hardcoded. Run `!commands` to see what is live on your studio.
+
+**Full command reference:** [docs/commands.md](docs/commands.md) | **API conformance matrix:** [docs/CONTRACT-conformance.md](docs/CONTRACT-conformance.md)
 
 ## Run your own Slate
 
 Full walk-through: [docs/quickstart.md](docs/quickstart.md). Every setting, in
-plain words: [docs/configuration.md](docs/configuration.md). The short version:
+plain words: [docs/configuration.md](docs/configuration.md). Every command:
+[docs/commands.md](docs/commands.md). Doc index: [docs/README.md](docs/README.md).
 
 ```bash
 # 1. Make a Discord bot and copy its token (see the quickstart).
@@ -194,12 +202,13 @@ Three films, three genres, same flow: conversation in, finished film out.
 - **Character portraits** -- `!portrait A [description]` generates a character image via the image service and syncs it to the Vivijure Cast (name, visual bible, and portrait registered in one step)
 - **Scene thumbnails** -- `!thumbnail <scene-id>` generates a quick visual for any scene using its prompt and the project's style prefix
 - **Image models** -- FLUX Schnell, FLUX 2 Klein, FLUX 2 Dev, Phoenix, Lucid Origin, Dreamshaper, SDXL, GPT Image 1.5, and more; switch with `!model <alias>`
-- **Render submission** -- `!render [draft|standard|final]` assembles the storyboard bundle and submits it to Vivijure; Slate notifies the channel automatically when the render completes
-- **D1 cloud session state** -- full storyboard brief, conversation history, brief undo history, and pending render jobs are stored in Cloudflare D1; nothing is lost on restart
+- **Render submission** -- `!render` runs a pre-submit huddle, then ships to Vivijure; Slate notifies the channel when the render completes
+- **Full studio parity** -- cast reuse, LoRA training, module hook pickers, preflight, projects, score beds, render history, and all 69 studio API routes via `!api` and bang aliases; no control panel required
+- **Module-gated commands** -- `!commands` lists only what your installed studio modules support; options come live from `GET /api/modules`
+- **D1 cloud session state** -- full storyboard brief, conversation history, brief undo history, render settings, cast bindings, and pending render jobs persist in Cloudflare D1
 - **Brief undo** -- `!undo` rolls back the last automatic brief extraction if Claude misread something
-- **Render settings, decided together** -- the group chooses the render backend (`!backend` own GPU vs cloud), the quality tier, and the opening title + end-credit cards (`!titlecard`). Slate holds these on the brief and carries them to the studio API at submit time; it runs no render logic of its own. Backend names and quality tiers are projected live from the studio registry (`GET /api/modules`), never hardcoded.
-- **Subtitles** -- `!subtitles on` captions the film's spoken dialogue. Slate tracks each shot's dialogue line on the brief and sends it as the studio's per-shot `dialogue_lines`; the `film.finish` subtitle module times each caption to its shot's window. The toggle is honest about needing a subtitle module installed and dialogue to caption.
-- **Slash commands** -- every command is available as a Discord slash command (`/brief`, `/portrait`, `/thumbnail`, `/backend`, `/titlecard`, `/subtitles`, `/render`, `/model`, `/undo`, `/learn`, `/reset`)
+- **Registry-projected render settings** -- `!tier`, `!keyframe`, `!backend`, `!keyframes-only`, `!config`, `!install-config`, `!titlecard`, `!subtitles`; all carried on the brief and mapped to the studio API at submit time
+- **Slash commands** -- every command is also a Discord slash command; see [docs/commands.md](docs/commands.md) for the full list
 
 ---
 
@@ -219,7 +228,10 @@ Discord channel
       |
       +-- Cloudflare D1          (session state: brief, history, render jobs)
       +-- image service          (image generation)
-      +-- Vivijure API           (Cast sync, portrait upload, storyboard render)
+      +-- Vivijure Studio API     (studio.mjs: 69 routes; contract.mjs; registry.mjs)
+      |       +-- Cast, projects, preflight, render, score, enhance, ...
+      |       +-- !api dispatcher (studio-api.mjs, 65 actions)
+      |       +-- !conformance    (route matrix)
 
 slate-search  (Cloudflare Worker)
   /search        Brave (web) or Tavily (research)
@@ -241,7 +253,8 @@ slate-search  (Cloudflare Worker)
 ## Setup
 
 The plain-language walk-through is in **[docs/quickstart.md](docs/quickstart.md)**,
-and **every** setting is documented in **[docs/configuration.md](docs/configuration.md)**.
+**every** setting in **[docs/configuration.md](docs/configuration.md)**, and the
+**full command reference** in **[docs/commands.md](docs/commands.md)**.
 In short: make a Discord bot (MESSAGE CONTENT intent on; scopes `bot` +
 `applications.commands`; permissions Send Messages, Read Message History, Attach
 Files), then:
@@ -261,20 +274,26 @@ shipping. Their keys are documented in
 
 ## Commands
 
-| Command | Slash | Description |
-|---------|-------|-------------|
-| `!brief` | `/brief` | Show the current storyboard state |
-| `!portrait <A\|B\|C\|D> [desc]` | `/portrait` | Generate a character portrait and sync to Vivijure Cast |
-| `!thumbnail <scene-id>` | `/thumbnail` | Generate a visual thumbnail for a scene |
-| `!model [name]` | `/model` | List available image models or switch the active one |
-| `!backend [name\|auto]` | `/backend` | Choose the render backend (own GPU vs cloud), or `auto` to let the studio decide. Options are projected live from the studio registry. |
-| `!titlecard <title> [\| sub] [\|\| credits]` | `/titlecard` | Set the opening title card + end credits (credits separated by `;` or `\|`), or clear them |
-| `!subtitles on\|off` | `/subtitles` | Caption spoken dialogue in the rendered film. Captions sync to each shot's dialogue line; they show once the brief carries dialogue and a subtitle module is installed |
-| `!render` | `/render` | Run the pre-submit **huddle**: Slate reads back the render settings, flags anything worth knowing, and offers the next creative beat or a clean ship. Confirm with `ship it` (or `!render now` / `!ship`); `/render confirm:true` or an explicit quality ships immediately. On submit a multi-character film auto-fills missing character refs and over-long scene prompts are smart-trimmed to the 50-word renderer cap |
-| `!ship` / `ship it` | -- | Confirm and send the render Slate just huddled on |
-| `!undo` | `/undo` | Roll back the last automatic brief extraction |
-| `!learn <text or URL>` | `/learn` | Index a film reference into the knowledge base |
-| `!reset` | `/reset` | Clear the project and start fresh |
+Slate has **40+ commands** covering storyboard planning, render settings, cast/LoRA workflows,
+studio projects, score beds, file uploads, and a universal `!api` dispatcher for every Vivijure
+HTTP route.
+
+**Canonical reference:** [docs/commands.md](docs/commands.md)
+
+Quick start:
+
+| Command | What it does |
+|---------|--------------|
+| `!commands` | List commands live on *your* studio (module-gated) |
+| `!brief` | Show the storyboard + render settings |
+| `!tier` / `!backend` / `!keyframe` | Pick quality tier and modules (when installed) |
+| `!cast` / `!bind` | Reuse trained studio characters |
+| `!preflight` | Validate before spending |
+| `!render` | Huddle, then ship on `ship it` |
+| `!api help` | Full studio API surface (69 routes) |
+| `!conformance` | Route-to-command conformance matrix |
+
+Every `!` command has a `/` slash equivalent where noted in [docs/commands.md](docs/commands.md).
 
 ---
 

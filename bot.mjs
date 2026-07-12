@@ -41,7 +41,14 @@
 //   !portrait <A|B|C|D> [desc]  generate + sync a character portrait
 //   !thumbnail <scene-id>  generate a visual thumbnail for a scene
 //   !model [name|id]       show available image models / switch the active one
-//   !backend [name|auto]   choose the render backend (own GPU vs cloud); options come from the studio
+//   !tier [draft|standard|final]  quality tier (projected from registry)
+//   !keyframe [name|auto]  pick the keyframe module (when installed)
+//   !backend [name|auto]   pick the i2v motion module (when installed)
+//   !keyframes-only on|off  SDXL preview without motion (needs keyframe module)
+//   !hooks                  live hook catalog + active module picks
+//   !commands               module-gated command list for this studio
+//   !install-config         operator install-scoped module knobs
+//   !autodirect [intensity] plan.enhance auto-direction (when installed)
 //   !titlecard <title> [| subtitle] [|| credit; credit]  set the opening title + end-credit cards
 //   !subtitles on|off      caption spoken dialogue in the rendered film
 //   !render                review the settings with a quick huddle, then ship on "ship it" / !render now
@@ -49,6 +56,28 @@
 //   !ship                  confirm + submit the render Slate just huddled on
 //   !undo                  roll back the last brief extraction
 //   !learn <text or URL>   index a film reference into the knowledge base
+//   !cast                  list the studio cast library (trained LoRAs, voices)
+//   !bind <slot> <name>    bind a storyboard slot to an existing studio character
+//   !unbind <slot>         clear a cast binding (back to inline character)
+//   !voice <slot> <id>     set a character's dialogue voice (see !voices)
+//   !voices                list valid Aura-1 voice ids
+//   !train <slot>          train a LoRA for a bound character
+//   !lorastatus <slot>     check LoRA training status
+//   !genrefs <slot>        generate training reference images via the studio
+//   !preflight             validate the storyboard before spending on a render
+//   !renders [n]           show recent render history from the studio
+//   !saveproject [name]    persist this brief to the studio project library
+//   !loadproject <id>      load a saved studio project into this channel
+//   !score music <prompt>  generate a music bed (or narration with storyboard context)
+//   !config [module field value]  view or set a render module config knob (registry-projected)
+//   !api <action> [args]   call any Vivijure studio API route (!api help lists all 69 surfaces)
+//   !studio                alias for !api
+//   !importcast            attach a .vvcast file to import a character
+//   !upload                attach an image -> staged R2 key (/api/upload)
+//   !audioupload           attach audio -> staged key for render mux
+//   !addref <slot>         attach image -> cast training ref for bound character
+//   !addsource <slot>      attach image -> cast source photo for bound character
+//   !characterref <slot>   attach image -> storyboard character ref (unbound slots)
 //   !reset                 clear the project and start fresh
 //
 // Render settings (backend, tier, title/credit cards) are decided in conversation or via the
@@ -61,7 +90,7 @@
 // clean "ship it." Confirm with "ship it" (or !render now / !ship); set an explicit quality to skip
 // the huddle. The tone is fixed; the wording varies by context.
 //
-// Slash commands: /brief /portrait /thumbnail /model /backend /titlecard /subtitles /render /undo /learn /reset
+// Slash commands: see docs/commands.md for the full list (40+ commands, module-gated)
 // (registered globally on startup; guild propagation is instant, global takes ~1 hour)
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -73,9 +102,61 @@ import {
   parseCreditLines,
   subtitleEnableField,
   buildCharacterRefs,
-  matchBackend,
+  buildCastLoras,
+  buildStoryboardPayload,
+  formatCastRoster,
+  formatPreflightResult,
+  mapModuleOverridesToFilmConfigs,
+  applySubtitleToFilmFinish,
+  resolveCastMember,
+  loraStatusLabel,
   pickAutoMotionBackend,
 } from './lib.mjs';
+import {
+  commandAvailability,
+  defaultTier,
+  findSubtitleModule,
+  formatAvailableCommands,
+  formatHooksStatus,
+  formatInstallConfig,
+  formatModuleConfigByHook,
+  formatPickOneList,
+  formatTierList,
+  gateMessage,
+  hookModules,
+  qualityTiers,
+  resolvePickOne,
+} from './registry.mjs';
+import { executeStudioAction } from './studio-api.mjs';
+import { STUDIO_COMMAND_ALIASES, aliasArgs, formatConformanceReport } from './contract.mjs';
+import {
+  listCast,
+  listVoices,
+  listRenders,
+  updateCast,
+  trainCastLora,
+  getCastLoraStatus,
+  generateCastRefs,
+  pollCastRefsJob,
+  startScoreBed,
+  pollJob,
+  createProject,
+  saveProjectStoryboard,
+  getProject as getStudioProject,
+  preflightStoryboard,
+  enhanceStoryboard,
+  getModuleInstallConfig,
+  patchModuleInstallConfig,
+  uploadImage,
+  uploadCharacterRef,
+  uploadAudio,
+  importCast,
+  addCastRef,
+  addCastSource,
+  deleteCastRef,
+  deleteCastSource,
+  deleteCastPortrait,
+} from './studio.mjs';
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -217,7 +298,9 @@ function emptyBrief() {
     duration_seconds: null,
     clip_seconds:     null,
     cast:             [],
+    cast_bindings:    {},   // { slot: studioCastPublicId } -- reuse trained LoRAs (#84)
     scenes:           [],
+    studio_project_id: null,
     // Shared render settings the group decides together (backend, tier, title cards, subtitles).
     // Slate holds NO render logic of its own: these are just the choices it carries forward to the
     // studio API at submit time. The studio is the single source of truth for what each choice means.
@@ -235,6 +318,12 @@ function emptyRenderSettings() {
     titles:         null,        // { text, subtitle? } for the opening title card. null = no card.
     credits:        null,        // { lines: [] } for the end-credit card. null = no card.
     subtitles:      false,       // burn dialogue captions (film.finish subtitle module). See dialogue tracking.
+    keyframe_backend: null,      // explicit keyframe module (null = registry default)
+    keyframes_only:   false,     // stop after keyframes (preview), no i2v/assemble
+    dialogue_backend: null,      // explicit dialogue module (null = registry default)
+    cast_image_backend: null,    // explicit cast.image module (null = registry default)
+    module_overrides: { config: {} }, // per-module render knobs (planner renderOverrides.config shape)
+    audio_key:        null,      // staged score/narration bed to mux after assemble
   };
 }
 
@@ -248,6 +337,8 @@ function ensureRenderSettings(brief) {
     for (const k of Object.keys(d)) {
       if (!(k in brief.render_settings)) brief.render_settings[k] = d[k];
     }
+    if (!brief.render_settings.module_overrides) brief.render_settings.module_overrides = { config: {} };
+    if (!brief.render_settings.module_overrides.config) brief.render_settings.module_overrides.config = {};
   }
   return brief.render_settings;
 }
@@ -371,7 +462,11 @@ The storyboard brief updates automatically in the background. Available commands
 - !brief / /brief               -- see the current storyboard state (and render settings)
 - !portrait A [desc] / /portrait -- generate a character portrait for slot A, B, C, or D
 - !thumbnail <scene-id> / /thumbnail -- generate a visual thumbnail for a scene
-- !backend [name|auto] / /backend -- choose the render backend (own GPU vs cloud), or auto
+- !tier / /tier -- quality tier; !keyframe / !backend -- pick modules (only when installed)
+- !keyframes-only on|off -- SDXL preview without motion (when keyframe module installed)
+- !hooks / !commands -- live hook catalog and module-gated command list
+- !config / !install-config -- per-render and install-scoped module knobs
+- !autodirect -- auto-direct shots via plan.enhance (when installed)
 - !titlecard <title> [| sub] [|| credits] / /titlecard -- set the opening title + end credits
 - !subtitles on|off / /subtitles -- caption spoken dialogue in the rendered film
 - !render [tier] / /render      -- submit to Vivijure for rendering (tier defaults to the project's)
@@ -381,6 +476,12 @@ is decided (in the brief's per-scene "dialogue"), and be honest that captions sh
 lines to show.
 - !undo / /undo                 -- roll back the last brief update
 - !learn <text or URL> / /learn -- add a film reference to the knowledge base
+- !cast / /cast -- list the studio cast library; !bind <slot> <name> to reuse trained characters
+- !train <slot> / /train -- train a LoRA; !preflight / /preflight before rendering
+- !renders / /renders -- render history; !config / /config for module knobs
+- !api <action> [args] / /api -- call any Vivijure studio API route (!api help lists all 69)
+- !conformance -- route-to-command conformance matrix (69 routes)
+- !importcast / !upload / !audioupload / !addref / !addsource -- attach files for cast import and uploads
 - !reset / /reset               -- clear the project and start fresh`;
 
 // ---------------------------------------------------------------------------
@@ -599,14 +700,15 @@ Notes:
   await withChannelLock(channelId, async () => {
     const p = projects.get(channelId) ?? project;
 
-    // Preserve portraitUrl + castId + portraitKey from existing cast.
+    // Preserve portraitUrl + castId + portraitKey + bound from existing cast.
     for (const existing of p.brief.cast) {
-      if (!existing.portraitUrl && !existing.castId) continue;
+      if (!existing.portraitUrl && !existing.castId && !existing.bound) continue;
       const m2 = updated.cast?.find(c => c.slot === existing.slot);
       if (!m2) continue;
       if (existing.portraitUrl  && !m2.portraitUrl)  m2.portraitUrl  = existing.portraitUrl;
       if (existing.castId       && !m2.castId)       m2.castId       = existing.castId;
       if (existing.portraitKey  && !m2.portraitKey)  m2.portraitKey  = existing.portraitKey;
+      if (existing.bound        && !m2.bound)        m2.bound        = existing.bound;
     }
 
     // Preserve any dialogue already set on a shot if the re-extraction dropped it (the extractor
@@ -622,6 +724,8 @@ Notes:
     // backend, title/credit cards, subtitles) across so a routine re-extraction never silently
     // resets them. Same principle as the cast/dialogue preservation above.
     updated.render_settings = p.brief.render_settings ?? emptyRenderSettings();
+    updated.cast_bindings = p.brief.cast_bindings ?? {};
+    updated.studio_project_id = p.brief.studio_project_id ?? null;
 
     // Save previous brief for !undo.
     p.briefHistory.push(JSON.parse(JSON.stringify(p.brief)));
@@ -641,30 +745,44 @@ Notes:
 // NOTE (copy review): these user-facing strings are intentionally plain/functional. The
 // conversational "huddle before we ship" voice pass is held for Mackaye + Conrad's review.
 
-// Show the backend options (projected from the registry) and the current pick.
+// Show the motion.backend pick_one options (projected from the registry).
 async function formatBackendList(current) {
-  const names = await getMotionBackends();
-  const lines = ['**Render backend** (`/backend <name|auto>`)\n'];
-  const autoActive = !current ? ' **<-- active**' : '';
-  lines.push(`  \`auto\` -- let the studio decide${autoActive}`);
-  if (!names.length) {
-    lines.push('  (no selectable motion backends reported by the studio right now; auto is used)');
-  } else {
-    for (const n of names) {
-      const active = n === current ? ' **<-- active**' : '';
-      lines.push(`  \`${n}\`${active}`);
-    }
-  }
-  return lines.join('\n');
+  const registry = await fetchRegistry();
+  const gates = commandAvailability(registry, true);
+  if (!gates.backend.ok) return gateMessage(gates.backend);
+  return formatPickOneList('motion.backend', registry, { motion_backend: current }, '!backend');
 }
 
-// Resolve a user backend choice against the live registry. 'auto'/'' -> null (omit on submit).
-// An unknown name returns { error } so the handler can show the valid options.
+async function formatKeyframeList(current) {
+  const registry = await fetchRegistry();
+  const gates = commandAvailability(registry, true);
+  if (!gates.keyframe.ok) return gateMessage(gates.keyframe);
+  return formatPickOneList('keyframe', registry, { keyframe_backend: current }, '!keyframe');
+}
+
 async function resolveBackend(input) {
-  const v = (input ?? '').trim().toLowerCase();
-  if (!v || v === 'auto' || v === 'default') return { value: null };
-  const names = await getMotionBackends();
-  return matchBackend(names, input);
+  const registry = await fetchRegistry();
+  return resolvePickOne(registry, 'motion.backend', input);
+}
+
+async function resolveKeyframe(input) {
+  const registry = await fetchRegistry();
+  return resolvePickOne(registry, 'keyframe', input);
+}
+
+async function studioGates() {
+  const registry = await fetchRegistry();
+  return commandAvailability(registry, !!CFG.vivijureUrl && !!CFG.studioApiToken);
+}
+
+async function requireGate(key, replyFn) {
+  const gates = await studioGates();
+  const g = gates[key];
+  if (!g?.ok) {
+    await replyFn(gateMessage(g));
+    return false;
+  }
+  return true;
 }
 
 // parseCreditLines -> lib.mjs (pure)
@@ -674,10 +792,11 @@ async function resolveBackend(input) {
 // never an empty switch. (Copy review: held for Mackaye + Conrad's voice pass.)
 async function subtitlesReply(on, brief) {
   if (!on) return 'Subtitles are off.';
+  const registry = await fetchRegistry();
+  const gates = commandAvailability(registry, true);
+  if (!gates.subtitles.ok) return gateMessage(gates.subtitles);
   const hasDialogue = brief.scenes.some((s) => s.dialogue && String(s.dialogue).trim());
-  const subMod = await getSubtitleModule().catch(() => null);
   const parts = ['Subtitles are on.'];
-  if (!subMod) parts.push('Heads up: the studio has no subtitle module installed right now, so nothing will be burned until one is.');
   if (!hasDialogue) parts.push('They caption spoken dialogue -- once we have lines for the shots, they will show. Tell me who says what, scene by scene.');
   return parts.join(' ');
 }
@@ -687,7 +806,9 @@ function formatRenderSettings(rs) {
   if (!rs) return '';
   const out = [];
   out.push(`tier: ${rs.quality_tier || 'draft'}`);
-  out.push(`backend: ${rs.motion_backend || 'auto'}`);
+  out.push(`keyframe: ${rs.keyframe_backend || 'auto'}`);
+  out.push(`motion: ${rs.motion_backend || 'auto'}`);
+  if (rs.keyframes_only) out.push('mode: keyframes-only');
   if (rs.titles?.text) out.push(`title: "${rs.titles.text}"${rs.titles.subtitle ? ` / "${rs.titles.subtitle}"` : ''}`);
   if (rs.credits?.lines?.length) out.push(`credits: ${rs.credits.lines.length} line(s)`);
   if (rs.subtitles) out.push('subtitles: on');
@@ -708,8 +829,9 @@ function formatBrief(brief) {
   if (brief.cast.length > 0) {
     lines.push('\n**Cast:**');
     for (const c of brief.cast) {
-      const portrait = c.portraitUrl ? ' (portrait generated)' : '';
-      lines.push(`  [${c.slot}] **${c.name}**${portrait} -- ${c.prompt}`);
+      const bound = brief.cast_bindings?.[c.slot] ? ' (bound to studio cast)' : '';
+      const portrait = c.portraitUrl || c.portraitKey ? ' (portrait)' : '';
+      lines.push(`  [${c.slot}] **${c.name}**${bound}${portrait} -- ${c.prompt}`);
     }
   }
 
@@ -789,11 +911,6 @@ function generatePortrait(slot, prompt, imageModel) {
 
 const REGISTRY_TTL_MS = 60_000;
 let registryCache = null;       // { at, data }
-const FALLBACK_TIERS = [
-  { value: 'draft',    label: 'draft',    blurb: 'fastest, lowest quality' },
-  { value: 'standard', label: 'standard', blurb: 'balanced' },
-  { value: 'final',    label: 'final',    blurb: 'production quality' },
-];
 
 async function fetchRegistry() {
   if (!CFG.vivijureUrl) return null;
@@ -816,41 +933,22 @@ async function fetchRegistry() {
 // picker is never empty. The studio owns the meaning of each tier; Slate just relays the options.
 async function getQualityTiers() {
   const data = await fetchRegistry();
-  const tiers = data?.render?.quality_tiers;
-  return Array.isArray(tiers) && tiers.length ? tiers : FALLBACK_TIERS;
+  return qualityTiers(data);
 }
 
 async function getDefaultTier() {
   const data = await fetchRegistry();
-  return data?.render?.default_tier ?? 'draft';
+  return defaultTier(data);
 }
 
-// Module names serving the motion.backend (i2v) pick_one hook, e.g. own-gpu vs a cloud module.
-// Read from the registry's hooks index (the same order the studio folds them) so Slate never
-// hardcodes backend names. Empty array -> Slate offers only "auto" (let the studio decide).
 async function getMotionBackends() {
   const data = await fetchRegistry();
-  const names = data?.hooks?.['motion.backend'];
-  return Array.isArray(names) ? names.filter(Boolean) : [];
+  return hookModules(data, 'motion.backend').map((m) => m.name);
 }
 
-// The subtitle film.finish module (name + config_schema), so the subtitles toggle writes the
-// module's REAL enable field rather than a guessed key -- the same projection principle as the
-// planner's render-config panel. null when no subtitle module is installed (the toggle then tells
-// the group subtitles are not available rather than silently no-op'ing).
 async function getSubtitleModule() {
   const data = await fetchRegistry();
-  const mods = Array.isArray(data?.modules) ? data.modules : [];
-  const serving = data?.hooks?.['film.finish'] || [];
-  for (const name of serving) {
-    const mod = mods.find((m) => m.name === name);
-    if (!mod) continue;
-    const schema = mod.config_schema || {};
-    const isSubtitle = /subtitle|caption/i.test(mod.name)
-      || Object.keys(schema).some((k) => /subtitle|caption|burn/i.test(k));
-    if (isSubtitle) return mod;
-  }
-  return null;
+  return findSubtitleModule(data);
 }
 
 // subtitleEnableField -> lib.mjs (pure)
@@ -876,6 +974,136 @@ function studioAuthHeaders() {
 
 function vivijureHeaders() {
   return { 'Content-Type': 'application/json', ...studioAuthHeaders() };
+}
+
+function studioCfg() {
+  return { vivijureUrl: CFG.vivijureUrl, headers: studioAuthHeaders() };
+}
+
+// Studio cast catalog cache (brief TTL) so list+bind in one burst does not re-fetch every turn.
+let castCatalogCache = null;
+const CAST_CATALOG_TTL_MS = 30_000;
+
+async function fetchCastCatalog(force = false) {
+  if (!CFG.vivijureUrl || !CFG.studioApiToken) return [];
+  if (!force && castCatalogCache && Date.now() - castCatalogCache.at < CAST_CATALOG_TTL_MS) {
+    return castCatalogCache.data;
+  }
+  try {
+    const res = await listCast(studioCfg());
+    if (!res.ok) { log(`[cast] GET /api/cast ${res.status}`); return castCatalogCache?.data ?? []; }
+    const data = Array.isArray(res.data?.cast) ? res.data.cast : [];
+    castCatalogCache = { at: Date.now(), data };
+    return data;
+  } catch (e) {
+    log(`[cast] catalog fetch failed: ${e.message}`);
+    return castCatalogCache?.data ?? [];
+  }
+}
+
+async function bindSlotToStudioCast(brief, slot, query) {
+  const catalog = await fetchCastCatalog();
+  const member = resolveCastMember(catalog, query);
+  if (!member) return { ok: false, error: `No studio character matches \`${query}\`. Run \`!cast\` to see the library.` };
+
+  if (!brief.cast_bindings || typeof brief.cast_bindings !== 'object') brief.cast_bindings = {};
+  brief.cast_bindings[slot] = member.id;
+
+  let entry = brief.cast.find((c) => c.slot === slot);
+  if (!entry) {
+    entry = { slot, name: member.name, prompt: member.bible || '' };
+    brief.cast.push(entry);
+  } else {
+    entry.name = member.name;
+    entry.prompt = member.bible || entry.prompt || '';
+  }
+  entry.castId = member.id;
+  entry.bound = true;
+  if (member.portrait_key) entry.portraitKey = member.portrait_key;
+
+  const lora = loraStatusLabel(member.lora_status);
+  return {
+    ok: true,
+    member,
+    message: `Slot **${slot}** bound to **${member.name}** (${lora}). Their trained LoRA will be used on render when ready.`,
+  };
+}
+
+function unbindSlot(brief, slot) {
+  if (!brief.cast_bindings) return false;
+  const had = !!brief.cast_bindings[slot];
+  delete brief.cast_bindings[slot];
+  const entry = brief.cast.find((c) => c.slot === slot);
+  if (entry) {
+    delete entry.bound;
+    if (entry.castId && entry.bound !== true) {
+      // keep castId if Slate created it this session; only clear when it was a pure bind
+    }
+  }
+  return had;
+}
+
+async function runPreflight(brief, bundleKey = null) {
+  const catalog = await fetchCastCatalog();
+  const characterRefs = buildCharacterRefs(brief, catalog);
+  const storyboard = buildStoryboardPayload(brief, characterRefs);
+  const rs = brief.render_settings || emptyRenderSettings();
+  const body = {
+    storyboard,
+    castBindings: buildCastLoras(brief.cast_bindings),
+    motionBackend: rs.motion_backend || undefined,
+    quality: rs.quality_tier || 'draft',
+  };
+  if (bundleKey) body.bundleKey = bundleKey;
+  if (rs.audio_key) body.audioKey = rs.audio_key;
+  const res = await preflightStoryboard(studioCfg(), body);
+  if (!res.ok) return { ok: false, error: friendlyHttpError(res.status, res.raw, 'the studio', 'run preflight') };
+  return { ok: true, result: res.data };
+}
+
+function buildStudioCtx(brief) {
+  return {
+    cfg: studioCfg(),
+    brief: brief || emptyBrief(),
+    fetchCastCatalog,
+    fetchRegistry,
+    getSubtitleModule,
+    emptyRenderSettings,
+  };
+}
+
+async function replyApi(channelId, action, argsRaw, replyFn) {
+  const project = await getProject(channelId);
+  const result = await executeStudioAction(action, argsRaw, buildStudioCtx(project.brief));
+  for (const chunk of splitMessage(result.text)) await replyFn(chunk);
+  return result.ok;
+}
+
+/** Dispatch STUDIO_COMMAND_ALIASES bang commands to !api actions. */
+async function handleStudioCommandAlias(rawText, channelId, replyFn) {
+  const m = rawText.match(/^!([a-z][a-z0-9-]*)(?:\s+(.*))?$/i);
+  if (!m) return false;
+  const cmd = m[1].toLowerCase();
+  if (cmd === 'conformance') {
+    for (const chunk of splitMessage(formatConformanceReport({ compact: true }))) await replyFn(chunk);
+    return true;
+  }
+  const alias = STUDIO_COMMAND_ALIASES[cmd];
+  if (!alias) return false;
+  const rest = (m[2] || '').trim();
+  const args = aliasArgs(alias, rest);
+  if (args === undefined) {
+    await replyFn(alias.usage ? `Usage: \`${alias.usage}\`` : `Usage: \`!${cmd} <args>\``);
+    return true;
+  }
+  await replyApi(channelId, alias.action, args, replyFn);
+  return true;
+}
+
+async function fetchAttachmentBuffer(attachment) {
+  const resp = await fetch(attachment.url);
+  if (!resp.ok) throw new Error(`fetch attachment failed ${resp.status}`);
+  return Buffer.from(await resp.arrayBuffer());
 }
 
 async function syncCastMember(castEntry) {
@@ -970,20 +1198,17 @@ async function submitToVivijure(brief, opts = {}) {
     return { ok: false, error: 'VIVIJURE_API_URL or STUDIO_API_TOKEN not configured' };
   }
   const rs = brief.render_settings || emptyRenderSettings();
-  // Resolve the tier against the live registry: prefer the explicit opt, then the project's saved
-  // tier; if that value is not among the studio's projected quality_tiers, fall back to the
-  // registry's declared default. Slate never invents a tier the studio does not advertise.
   const requested = opts.quality ?? rs.quality_tier ?? 'draft';
   const tiers = await getQualityTiers();
   const quality = tiers.some((t) => t.value === requested) ? requested : await getDefaultTier();
 
   const authHeaders = studioAuthHeaders();
-  const characterRefs = buildCharacterRefs(brief);
+  const catalog = await fetchCastCatalog();
+  const characterRefs = buildCharacterRefs(brief, catalog);
+  const castLoras = buildCastLoras(brief.cast_bindings);
   const refSlots = new Set(Object.keys(characterRefs));
   const sceneSlots = (slots) => (slots ?? []).filter(slot => refSlots.has(slot));
 
-  // Smart-trim every scene prompt to the cap, collecting which ones changed so the caller can
-  // surface a heads-up rather than silently dropping words.
   const trims = [];
   const trimmedById = {};
   for (const s of brief.scenes) {
@@ -993,19 +1218,7 @@ async function submitToVivijure(brief, opts = {}) {
   }
   const promptFor = (s) => trimmedById[s.id] ?? (s.prompt ?? '');
 
-  const storyboard = {
-    title:            brief.title ?? 'Untitled',
-    full_prompt:      brief.full_prompt  ?? undefined,
-    style_prefix:     brief.style_prefix ? brief.style_prefix.slice(0, 256) : undefined,
-    style_category:   brief.style_category ?? 'None',
-    duration_seconds: brief.duration_seconds ?? undefined,
-    clip_seconds:     brief.clip_seconds ?? undefined,
-    use_characters:   [...new Set(brief.scenes.flatMap(s => sceneSlots(s.character_slots)))],
-    scenes:           brief.scenes.map(s => ({
-      id: s.id, prompt: promptFor(s), act: s.act ?? undefined,
-      character_slots: sceneSlots(s.character_slots), target_seconds: s.target_seconds ?? undefined,
-    })),
-  };
+  const storyboard = buildStoryboardPayload(brief, characterRefs);
 
   const bundleRes = await fetch(`${CFG.vivijureUrl}/api/storyboard/bundle`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders },
@@ -1017,13 +1230,19 @@ async function submitToVivijure(brief, opts = {}) {
   }
   const { bundleKey } = await bundleRes.json();
 
-  // Staged module-host pipeline (keyframe -> clips -> finish -> assemble). The studio derives
-  // `project` from bundle_key. The group's choices map straight to the API contract:
-  //   quality tier   -> keyframe_config.quality_tier
-  //   motion backend -> motion_backend (omitted when auto: studio picks)
-  //   title/credits  -> film_titles (omitted when no card)
-  // finish-rife stays held off (interpolate / face_restore disabled) until vivijure-backend#76
-  // lands; disabled it no-ops synchronously, so films still complete via keyframe -> clips -> assemble.
+  // Pre-render validation (#85): surface blockers before spend.
+  if (!opts.skipPreflight) {
+    const pf = await runPreflight(brief, bundleKey).catch(() => null);
+    if (pf?.ok && pf.result && pf.result.ok === false) {
+      return { ok: false, error: formatPreflightResult(pf.result), preflight: pf.result };
+    }
+  }
+
+  const registry = await fetchRegistry();
+  const mapped = registry
+    ? mapModuleOverridesToFilmConfigs(registry, rs, quality)
+    : { keyframe_config: { quality_tier: quality }, motion_config: {}, finish_config: {}, speech_config: {}, film_finish_config: {}, master_config: {} };
+
   const filmBody = {
     bundle_key: bundleKey,
     scenes: brief.scenes.map(s => ({
@@ -1031,50 +1250,58 @@ async function submitToVivijure(brief, opts = {}) {
       prompt:  promptFor(s),
       seconds: s.target_seconds ?? brief.clip_seconds ?? 5,
     })),
-    keyframe_config: { quality_tier: quality },
-    finish_config:   { 'finish-rife': { interpolate: false, face_restore: 'none' } },
+    keyframe_config: mapped.keyframe_config,
+    finish_config:   { 'finish-rife': { interpolate: false, face_restore: 'none' }, ...mapped.finish_config },
   };
-  // Motion backend (slate#58): the studio defaults an OMITTED motion_backend to serving[0] (its
-  // ui.order-first motion.backend module, locality-blind), which can be a bound-but-non-operational
-  // local gpu-door -- the film then burns keyframes and dies at assemble. So Slate always sends an
-  // EXPLICIT, serving backend: the group's pick when set, else auto resolved against the live
-  // registry (cloud > own-gpu > door). A registry we cannot read, or one that serves no motion
-  // backend, fails the render loudly here; it never falls back to omitting.
-  if (rs.motion_backend) {
-    filmBody.motion_backend = rs.motion_backend;
+  if (mapped.keyframe_backend) filmBody.keyframe_backend = mapped.keyframe_backend;
+  const keyframesOnly = !!rs.keyframes_only;
+  if (keyframesOnly) {
+    filmBody.keyframes_only = true;
   } else {
-    const registry = await fetchRegistry();
-    if (!registry) {
-      return { ok: false, error: 'I could not reach the studio to choose a render backend. Give it a moment and try again, or set one with `/backend <name>`.' };
-    }
-    const picked = pickAutoMotionBackend(registry);
-    if (picked.error) {
-      return { ok: false, error: `I cannot start this render: ${picked.error}. Set one with \`/backend <name>\` once a backend is available.` };
-    }
-    filmBody.motion_backend = picked.value;
-  }
-  const filmTitles = buildFilmTitles(rs);
-  if (filmTitles) filmBody.film_titles = filmTitles;
+    if (Object.keys(mapped.speech_config || {}).length) filmBody.speech_config = mapped.speech_config;
+    if (Object.keys(mapped.master_config || {}).length) filmBody.master_config = mapped.master_config;
+    if (rs.audio_key) filmBody.audio_key = rs.audio_key;
 
-  // Dialogue lines: one {shot_id, text} per speaking shot (the studio's caption model is one line
-  // per shot). Forwarded so the film.finish subtitle module can time captions to each shot's window.
-  // The studio's /api/render/film forwards dialogue_lines since vivijure#296; captions activate once
-  // a subtitle film.finish module is installed and subtitles are turned on.
+    if (rs.motion_backend) {
+      filmBody.motion_backend = rs.motion_backend;
+      if (mapped.motion_config && Object.keys(mapped.motion_config).length) {
+        filmBody.motion_config = mapped.motion_config;
+      }
+    } else if (mapped.motion_backend) {
+      filmBody.motion_backend = mapped.motion_backend;
+      if (mapped.motion_config && Object.keys(mapped.motion_config).length) {
+        filmBody.motion_config = mapped.motion_config;
+      }
+    } else {
+      if (!registry) {
+        return { ok: false, error: 'I could not reach the studio to choose a render backend. Give it a moment and try again, or set one with `/backend <name>`.' };
+      }
+      const picked = pickAutoMotionBackend(registry);
+      if (picked.error) {
+        return { ok: false, error: `I cannot start this render: ${picked.error}. Set one with \`/backend <name>\` once a backend is available.` };
+      }
+      filmBody.motion_backend = picked.value;
+    }
+  }
+
+  if (!keyframesOnly) {
+    const filmTitles = buildFilmTitles(rs);
+    if (filmTitles) filmBody.film_titles = filmTitles;
+  }
+
   const dialogueLines = brief.scenes
     .filter((s) => s.dialogue && String(s.dialogue).trim())
     .map((s) => ({ shot_id: s.id, text: String(s.dialogue).trim() }));
-  if (dialogueLines.length) filmBody.dialogue_lines = dialogueLines;
+  if (dialogueLines.length && !keyframesOnly) filmBody.dialogue_lines = dialogueLines;
 
-  // Subtitles: enable the subtitle film.finish module via its real config field. Only sent when the
-  // group turned subtitles on AND a subtitle module is installed AND there is dialogue to caption --
-  // an honest toggle, never an empty switch.
-  if (rs.subtitles && dialogueLines.length) {
+  let filmFinishConfig = mapped.film_finish_config || {};
+  if (!keyframesOnly && rs.subtitles && dialogueLines.length) {
     const subMod = await getSubtitleModule();
-    if (subMod) {
-      const field = subtitleEnableField(subMod);
-      filmBody.film_finish_config = { ...(filmBody.film_finish_config || {}), [subMod.name]: { [field]: true } };
-    }
+    if (subMod) filmFinishConfig = applySubtitleToFilmFinish(filmFinishConfig, subMod, true);
   }
+  if (!keyframesOnly && Object.keys(filmFinishConfig).length) filmBody.film_finish_config = filmFinishConfig;
+
+  if (Object.keys(castLoras).length) filmBody.cast_loras = castLoras;
 
   const filmRes = await postStudioJson(`${CFG.vivijureUrl}/api/render/film`,
     { 'Content-Type': 'application/json', ...authHeaders }, JSON.stringify(filmBody));
@@ -1094,18 +1321,24 @@ async function submitToVivijure(brief, opts = {}) {
 // so Slate can ask as a collaborator instead of letting the backend 400.
 // Returns { ok: true, generated: [slots] } or { ok: false, missing: [slots] }.
 async function ensureCharacterRefs(brief, channelId, imageModel) {
-  // Only characters that scenes reference matter for the bundle.
+  const catalog = await fetchCastCatalog();
   const usedSlots = new Set(brief.scenes.flatMap(s => s.character_slots ?? []));
   const referenced = brief.cast.filter(c => usedSlots.has(c.slot));
-  // Single-character (or no-character) films do not need refs; the bundle accepts them.
   if (referenced.length <= 1) return { ok: true, generated: [] };
 
   const generated = [];
   const missing = [];
   for (const c of referenced) {
-    if (c.castId && c.portraitKey) continue;  // already has a real ref
+    // Bound studio cast: refs come from the catalog (portrait + ref_keys).
+    if (brief.cast_bindings?.[c.slot]) {
+      const member = resolveCastMember(catalog, brief.cast_bindings[c.slot]);
+      const refs = member && buildCharacterRefs({ cast: [c], cast_bindings: { [c.slot]: member.id } }, catalog);
+      if (refs?.[c.slot]) continue;
+      if (!member?.portrait_key) { missing.push(c.slot); continue; }
+      continue;
+    }
+    if (c.castId && c.portraitKey) continue;
     if (!c.prompt || !c.prompt.trim()) { missing.push(c.slot); continue; }
-    // Auto-derive: same path /portrait uses, run silently as part of the submit.
     const result = await generatePortrait(c.slot, c.prompt, imageModel).catch(() => null);
     if (!result || !result.ok) { missing.push(c.slot); continue; }
     c.portraitUrl = result.artifactUrl;
@@ -1163,14 +1396,18 @@ function backendLabel(rs) {
 function huddleSettingsPhrase(brief) {
   const rs = brief.render_settings || emptyRenderSettings();
   const frags = [];
-  frags.push(backendLabel(rs));
+  if (rs.keyframes_only) frags.push('keyframes-only preview');
+  else frags.push(backendLabel(rs));
   frags.push(`${rs.quality_tier || 'draft'} quality`);
+  if (rs.keyframe_backend) frags.push(`keyframe \`${rs.keyframe_backend}\``);
   const hasDialogue = brief.scenes.some((s) => s.dialogue && String(s.dialogue).trim());
-  if (rs.subtitles) frags.push(hasDialogue ? 'subtitles on' : 'subtitles on (no dialogue to caption yet)');
-  else frags.push('subtitles off');
-  if (rs.titles?.text) frags.push(`title card "${rs.titles.text}"`);
-  else frags.push('no title card yet');
-  if (rs.credits?.lines?.length) frags.push(`${rs.credits.lines.length} credit line(s)`);
+  if (!rs.keyframes_only) {
+    if (rs.subtitles) frags.push(hasDialogue ? 'subtitles on' : 'subtitles on (no dialogue to caption yet)');
+    else frags.push('subtitles off');
+    if (rs.titles?.text) frags.push(`title card "${rs.titles.text}"`);
+    else frags.push('no title card yet');
+    if (rs.credits?.lines?.length) frags.push(`${rs.credits.lines.length} credit line(s)`);
+  }
   return frags.join(', ');
 }
 
@@ -1202,7 +1439,7 @@ function huddleHeadsUp(brief) {
   const usedSlots = new Set(brief.scenes.flatMap((s) => s.character_slots ?? []));
   const referenced = brief.cast.filter((c) => usedSlots.has(c.slot));
   if (referenced.length > 1) {
-    const noRef = referenced.filter((c) => !(c.castId && c.portraitKey));
+    const noRef = referenced.filter((c) => !(brief.cast_bindings?.[c.slot] || (c.castId && c.portraitKey)));
     const renderable = noRef.filter((c) => c.prompt && c.prompt.trim());
     if (renderable.length) notes.push(`I'll generate a quick look for ${renderable.map((c) => c.name || c.slot).join(' and ')} first`);
   }
@@ -1382,6 +1619,104 @@ function splitMessage(text, limit = 1990) {
   return chunks.filter(Boolean);
 }
 
+async function castIdForSlot(brief, slot) {
+  return brief.cast_bindings?.[slot] || brief.cast.find((c) => c.slot === slot)?.castId || null;
+}
+
+async function formatVoicesList() {
+  const res = await listVoices(studioCfg());
+  if (!res.ok) return 'Could not load voices from the studio.';
+  const voices = Array.isArray(res.data?.voices) ? res.data.voices : [];
+  if (!voices.length) return 'No voices reported.';
+  return '**Dialogue voices** (`!voice <slot> <id>`)\n' + voices.map((v) => `  \`${v.id}\` -- ${v.label}`).join('\n');
+}
+
+async function formatRendersList(limit = 10) {
+  const res = await listRenders(studioCfg(), { limit });
+  if (!res.ok) return 'Could not load render history.';
+  const rows = Array.isArray(res.data?.renders) ? res.data.renders : [];
+  if (!rows.length) return 'No renders in the studio library yet.';
+  const lines = ['**Recent renders**\n'];
+  for (const r of rows.slice(0, limit)) {
+    const label = r.label || r.job_id || r.id;
+    const st = r.status || r.phase || '?';
+    lines.push(`  \`${r.id?.slice?.(0, 8) || r.id}…\` **${label}** -- ${st}`);
+  }
+  return lines.join('\n');
+}
+
+async function formatModuleConfig(rs, moduleFilter) {
+  const registry = await fetchRegistry();
+  const gates = commandAvailability(registry, true);
+  if (!gates.config.ok) return gateMessage(gates.config);
+  return formatModuleConfigByHook(registry, rs, moduleFilter);
+}
+
+function setModuleConfigField(rs, modName, field, rawValue) {
+  if (!rs.module_overrides) rs.module_overrides = { config: {} };
+  if (!rs.module_overrides.config) rs.module_overrides.config = {};
+  if (!rs.module_overrides.config[modName]) rs.module_overrides.config[modName] = {};
+  const schema = null; // type coercion done best-effort below
+  let val = rawValue;
+  if (rawValue === 'true') val = true;
+  else if (rawValue === 'false') val = false;
+  else if (/^-?\d+$/.test(rawValue)) val = parseInt(rawValue, 10);
+  else if (/^-?\d+\.\d+$/.test(rawValue)) val = Number(rawValue);
+  rs.module_overrides.config[modName][field] = val;
+  return val;
+}
+
+async function runAutodirect(channelId, intensity, replyFn) {
+  const gates = await studioGates();
+  if (!gates.autodirect.ok) { await replyFn(gateMessage(gates.autodirect)); return; }
+  const project = await getProject(channelId);
+  if (!project.brief.scenes.length) { await replyFn('No scenes yet -- build the storyboard first.'); return; }
+  const catalog = await fetchCastCatalog();
+  const storyboard = buildStoryboardPayload(project.brief, buildCharacterRefs(project.brief, catalog));
+  await replyFn('Auto-directing shots...');
+  const res = await enhanceStoryboard(studioCfg(), { storyboard, config: { intensity: intensity || 'medium' } });
+  if (!res.ok) { await replyFn(friendlyHttpError(res.status, res.raw, 'the studio', 'auto-direct')); return; }
+  if (res.data?.storyboard) {
+    project.brief = { ...project.brief, ...res.data.storyboard };
+    ensureRenderSettings(project.brief);
+    await saveProject(channelId);
+  }
+  const applied = Array.isArray(res.data?.applied) ? res.data.applied.join(', ') : '';
+  const note = Array.isArray(res.data?.notes) && res.data.notes[0] ? ` -- ${res.data.notes[0]}` : '';
+  await replyFn(`Auto-directed${applied ? ` via ${applied}` : ''}${note}. Use \`!brief\` to review.`);
+}
+
+async function pollRefsJob(castId, jobId, say) {
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const res = await pollCastRefsJob(studioCfg(), castId, jobId);
+    if (!res.ok) { await say(`Ref generation poll failed (${res.status}).`); return null; }
+    const phase = res.data?.phase;
+    if (phase === 'done') return res.data;
+    if (phase === 'failed') {
+      await say(`Ref generation failed: ${res.data?.error || 'unknown error'}`);
+      return null;
+    }
+  }
+  await say('Ref generation timed out -- check the control panel.');
+  return null;
+}
+
+async function pollScoreJob(jobId, moduleName, say) {
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const res = await pollJob(studioCfg(), jobId, moduleName);
+    if (!res.ok) { await say(`Score bed poll failed (${res.status}).`); return null; }
+    if (res.data?.status === 'done' && res.data?.output_artifact?.key) return res.data.output_artifact.key;
+    if (res.data?.status === 'failed') {
+      await say(`Score generation failed: ${res.data?.job_error || 'unknown error'}`);
+      return null;
+    }
+  }
+  await say('Score generation timed out.');
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Slash command definitions
 // ---------------------------------------------------------------------------
@@ -1435,6 +1770,109 @@ const SLASH_COMMANDS = [
   new SlashCommandBuilder()
     .setName('reset')
     .setDescription('Clear the project and start fresh'),
+  new SlashCommandBuilder()
+    .setName('cast')
+    .setDescription('List the studio cast library (trained LoRAs, voices)'),
+  new SlashCommandBuilder()
+    .setName('bind')
+    .setDescription('Bind a storyboard slot to an existing studio character')
+    .addStringOption(o => o.setName('slot').setDescription('Character slot').setRequired(true)
+      .addChoices({ name: 'A', value: 'A' }, { name: 'B', value: 'B' }, { name: 'C', value: 'C' }, { name: 'D', value: 'D' }))
+    .addStringOption(o => o.setName('name').setDescription('Studio character name or id').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('unbind')
+    .setDescription('Clear a cast binding')
+    .addStringOption(o => o.setName('slot').setDescription('Character slot').setRequired(true)
+      .addChoices({ name: 'A', value: 'A' }, { name: 'B', value: 'B' }, { name: 'C', value: 'C' }, { name: 'D', value: 'D' })),
+  new SlashCommandBuilder()
+    .setName('voices')
+    .setDescription('List valid Aura-1 dialogue voice ids'),
+  new SlashCommandBuilder()
+    .setName('voice')
+    .setDescription('Set a character dialogue voice')
+    .addStringOption(o => o.setName('slot').setDescription('Character slot').setRequired(true)
+      .addChoices({ name: 'A', value: 'A' }, { name: 'B', value: 'B' }, { name: 'C', value: 'C' }, { name: 'D', value: 'D' }))
+    .addStringOption(o => o.setName('voice_id').setDescription('Voice id from /voices').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('train')
+    .setDescription('Train a LoRA for a bound studio character')
+    .addStringOption(o => o.setName('slot').setDescription('Character slot').setRequired(true)
+      .addChoices({ name: 'A', value: 'A' }, { name: 'B', value: 'B' }, { name: 'C', value: 'C' }, { name: 'D', value: 'D' })),
+  new SlashCommandBuilder()
+    .setName('lorastatus')
+    .setDescription('Check LoRA training status for a bound character')
+    .addStringOption(o => o.setName('slot').setDescription('Character slot').setRequired(true)
+      .addChoices({ name: 'A', value: 'A' }, { name: 'B', value: 'B' }, { name: 'C', value: 'C' }, { name: 'D', value: 'D' })),
+  new SlashCommandBuilder()
+    .setName('genrefs')
+    .setDescription('Generate training reference images for a bound character')
+    .addStringOption(o => o.setName('slot').setDescription('Character slot').setRequired(true)
+      .addChoices({ name: 'A', value: 'A' }, { name: 'B', value: 'B' }, { name: 'C', value: 'C' }, { name: 'D', value: 'D' })),
+  new SlashCommandBuilder()
+    .setName('preflight')
+    .setDescription('Validate the storyboard before rendering'),
+  new SlashCommandBuilder()
+    .setName('renders')
+    .setDescription('Show recent render history from the studio')
+    .addIntegerOption(o => o.setName('limit').setDescription('Max rows (default 10)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('saveproject')
+    .setDescription('Persist this brief to the studio project library')
+    .addStringOption(o => o.setName('name').setDescription('Project name (defaults to film title)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('loadproject')
+    .setDescription('Load a saved studio project')
+    .addStringOption(o => o.setName('id').setDescription('Project id (from saveproject or control panel)').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('score')
+    .setDescription('Generate a music or narration bed')
+    .addStringOption(o => o.setName('kind').setDescription('music or narration').setRequired(true)
+      .addChoices({ name: 'music', value: 'music' }, { name: 'narration', value: 'narration' }))
+    .addStringOption(o => o.setName('prompt').setDescription('Music prompt or narration text').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('tier')
+    .setDescription('Set or list the render quality tier')
+    .addStringOption(o => o.setName('value').setDescription('draft, standard, or final (omit to list)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('keyframe')
+    .setDescription('Pick the keyframe module (when installed)')
+    .addStringOption(o => o.setName('choice').setDescription('Module name, auto, or omit to list').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('keyframesonly')
+    .setDescription('Toggle keyframes-only preview (no motion leg)')
+    .addStringOption(o => o.setName('state').setDescription('on or off').setRequired(true)
+      .addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })),
+  new SlashCommandBuilder()
+    .setName('hooks')
+    .setDescription('Show the live studio hook catalog and active picks'),
+  new SlashCommandBuilder()
+    .setName('commands')
+    .setDescription('List module-gated commands available on this studio'),
+  new SlashCommandBuilder()
+    .setName('autodirect')
+    .setDescription('Auto-direct shots via plan.enhance (when installed)')
+    .addStringOption(o => o.setName('intensity').setDescription('low, medium, or high').setRequired(false)
+      .addChoices({ name: 'low', value: 'low' }, { name: 'medium', value: 'medium' }, { name: 'high', value: 'high' })),
+  new SlashCommandBuilder()
+    .setName('installconfig')
+    .setDescription('View or set install-scoped module config')
+    .addStringOption(o => o.setName('module').setDescription('Module name').setRequired(false))
+    .addStringOption(o => o.setName('field').setDescription('Config field').setRequired(false))
+    .addStringOption(o => o.setName('value').setDescription('Value to set').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('config')
+    .setDescription('View or set a render module config knob')
+    .addStringOption(o => o.setName('module').setDescription('Module name (omit to list)').setRequired(false))
+    .addStringOption(o => o.setName('field').setDescription('Config field name').setRequired(false))
+    .addStringOption(o => o.setName('value').setDescription('Value to set').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('api')
+    .setDescription('Call any Vivijure studio API route (api help lists all surfaces)')
+    .addStringOption(o => o.setName('action').setDescription('Action name (e.g. health, cast-list, film-submit)').setRequired(true))
+    .addStringOption(o => o.setName('args').setDescription('key:value args or JSON').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('conformance')
+    .setDescription('Show the Vivijure CONTRACT route-to-command conformance matrix'),
 ].map(c => c.toJSON());
 
 async function registerSlashCommands(clientId) {
@@ -1572,13 +2010,109 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case 'backend': {
         const project = await getProject(channelId);
         const rs = ensureRenderSettings(project.brief);
+        if (!(await requireGate('backend', (t) => interaction.reply(t)))) break;
         const choice = interaction.options.getString('choice');
-        if (choice == null) { await interaction.reply(await formatBackendList(rs.motion_backend)); return; }
+        if (choice == null) { await interaction.reply((await formatBackendList(rs.motion_backend)).slice(0, 2000)); return; }
         const r = await resolveBackend(choice);
         if (r.error) { await interaction.reply(r.error); return; }
         rs.motion_backend = r.value;
         await saveProject(channelId);
-        await interaction.reply(r.value ? `Render backend set to **${r.value}**.` : 'Render backend set to **auto** (the studio decides).');
+        await interaction.reply(r.value ? `Motion backend set to **${r.value}**.` : 'Motion backend set to **auto** (registry default).');
+        break;
+      }
+
+      case 'tier': {
+        const project = await getProject(channelId);
+        const rs = ensureRenderSettings(project.brief);
+        const value = interaction.options.getString('value');
+        const registry = await fetchRegistry();
+        if (!value) {
+          await interaction.reply(formatTierList(registry, rs.quality_tier).slice(0, 2000));
+          break;
+        }
+        const tiers = qualityTiers(registry);
+        if (!tiers.some((t) => t.value === value)) {
+          await interaction.reply(`Unknown tier \`${value}\`. Use \`/tier\` to list options.`);
+          break;
+        }
+        rs.quality_tier = value;
+        await saveProject(channelId);
+        await interaction.reply(`Quality tier set to **${value}**.`);
+        break;
+      }
+
+      case 'keyframe': {
+        const project = await getProject(channelId);
+        const rs = ensureRenderSettings(project.brief);
+        if (!(await requireGate('keyframe', (t) => interaction.reply(t)))) break;
+        const choice = interaction.options.getString('choice');
+        if (choice == null) {
+          await interaction.reply((await formatKeyframeList(rs.keyframe_backend)).slice(0, 2000));
+          break;
+        }
+        const r = await resolveKeyframe(choice);
+        if (r.error) { await interaction.reply(r.error); return; }
+        rs.keyframe_backend = r.value;
+        await saveProject(channelId);
+        await interaction.reply(r.value ? `Keyframe module set to **${r.value}**.` : 'Keyframe module set to **auto** (registry default).');
+        break;
+      }
+
+      case 'keyframesonly': {
+        const project = await getProject(channelId);
+        const rs = ensureRenderSettings(project.brief);
+        if (!(await requireGate('keyframes-only', (t) => interaction.reply(t)))) break;
+        const state = interaction.options.getString('state');
+        rs.keyframes_only = state === 'on';
+        await saveProject(channelId);
+        await interaction.reply(rs.keyframes_only
+          ? 'Keyframes-only mode **on** (SDXL preview, no motion leg).'
+          : 'Keyframes-only mode **off** (full render).');
+        break;
+      }
+
+      case 'hooks': {
+        if (!(await requireGate('hooks', (t) => interaction.reply(t)))) break;
+        const project = await getProject(channelId);
+        const registry = await fetchRegistry();
+        const text = formatHooksStatus(registry, project.brief.render_settings);
+        await interaction.reply(text.slice(0, 2000));
+        break;
+      }
+
+      case 'commands': {
+        const gates = await studioGates();
+        const text = formatAvailableCommands(gates);
+        await interaction.reply(text.slice(0, 2000));
+        break;
+      }
+
+      case 'autodirect': {
+        const intensity = interaction.options.getString('intensity') || 'medium';
+        await interaction.deferReply();
+        await runAutodirect(channelId, intensity, (t) => interaction.editReply(t.slice(0, 2000)));
+        break;
+      }
+
+      case 'installconfig': {
+        const registry = await fetchRegistry();
+        if (!(await requireGate('install-config', (t) => interaction.reply(t)))) break;
+        const mod = interaction.options.getString('module');
+        const field = interaction.options.getString('field');
+        const value = interaction.options.getString('value');
+        if (!mod) {
+          await interaction.reply(formatInstallConfig(registry).slice(0, 2000));
+          break;
+        }
+        if (!field || value == null) {
+          await interaction.reply(formatInstallConfig(registry, mod).slice(0, 2000));
+          break;
+        }
+        const body = { [field]: value === 'true' ? true : value === 'false' ? false : (/^-?\d+$/.test(value) ? parseInt(value, 10) : value) };
+        const res = await patchModuleInstallConfig(studioCfg(), mod, body);
+        await interaction.reply(res.ok
+          ? `Install config **${mod}**.${field} updated.`
+          : friendlyHttpError(res.status, res.raw, 'the studio', 'patch install config'));
         break;
       }
 
@@ -1615,6 +2149,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const project = await getProject(channelId);
         const rs = ensureRenderSettings(project.brief);
         const on = interaction.options.getString('state') === 'on';
+        if (on && !(await requireGate('subtitles', (t) => interaction.reply(t)))) break;
         rs.subtitles = on;
         await saveProject(channelId);
         await interaction.reply(await subtitlesReply(on, project.brief));
@@ -1662,6 +2197,226 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await saveProject(channelId);
         log(`[${channelId}] project reset by ${authorName}`);
         await interaction.reply('Project cleared. Ready to start a new film.');
+        break;
+      }
+
+      case 'cast': {
+        const roster = await fetchCastCatalog(true);
+        await interaction.reply(formatCastRoster(roster).slice(0, 2000));
+        break;
+      }
+
+      case 'bind': {
+        const slot = interaction.options.getString('slot');
+        const name = interaction.options.getString('name');
+        const project = await getProject(channelId);
+        const r = await bindSlotToStudioCast(project.brief, slot, name);
+        if (!r.ok) { await interaction.reply(r.error); break; }
+        await saveProject(channelId);
+        await interaction.reply(r.message);
+        break;
+      }
+
+      case 'unbind': {
+        const slot = interaction.options.getString('slot');
+        const project = await getProject(channelId);
+        const had = unbindSlot(project.brief, slot);
+        await saveProject(channelId);
+        await interaction.reply(had ? `Slot **${slot}** unbound from studio cast.` : `Slot **${slot}** was not bound.`);
+        break;
+      }
+
+      case 'voices': {
+        if (!(await requireGate('voices', (t) => interaction.reply(t)))) break;
+        await interaction.reply((await formatVoicesList()).slice(0, 2000));
+        break;
+      }
+
+      case 'voice': {
+        if (!(await requireGate('voices', (t) => interaction.reply(t)))) break;
+        const slot = interaction.options.getString('slot');
+        const voiceId = interaction.options.getString('voice_id');
+        const project = await getProject(channelId);
+        const castId = await castIdForSlot(project.brief, slot);
+        if (!castId) { await interaction.reply(`Slot **${slot}** is not bound to a studio character. \`/bind\` first.`); break; }
+        const res = await updateCast(studioCfg(), castId, { voice_id: voiceId });
+        if (!res.ok) { await interaction.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'set voice')); break; }
+        castCatalogCache = null;
+        await interaction.reply(`Voice for slot **${slot}** set to **${voiceId}**.`);
+        break;
+      }
+
+      case 'train': {
+        const slot = interaction.options.getString('slot');
+        const project = await getProject(channelId);
+        const castId = await castIdForSlot(project.brief, slot);
+        if (!castId) { await interaction.reply(`Slot **${slot}** is not bound. \`/bind\` first.`); break; }
+        await interaction.deferReply();
+        const res = await trainCastLora(studioCfg(), castId, {});
+        if (!res.ok) { await interaction.editReply(friendlyHttpError(res.status, res.raw, 'the studio', 'start LoRA training')); break; }
+        castCatalogCache = null;
+        await interaction.editReply(`LoRA training started for slot **${slot}** (job \`${res.data?.jobId || '?'}\`). Check with \`/lorastatus ${slot}\`.`);
+        break;
+      }
+
+      case 'lorastatus': {
+        const slot = interaction.options.getString('slot');
+        const project = await getProject(channelId);
+        const castId = await castIdForSlot(project.brief, slot);
+        if (!castId) { await interaction.reply(`Slot **${slot}** is not bound.`); break; }
+        const res = await getCastLoraStatus(studioCfg(), castId);
+        if (!res.ok) { await interaction.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'check LoRA status')); break; }
+        const st = res.data?.lora_status || res.data?.cast?.lora_status || 'unknown';
+        const err = res.data?.lora_error || res.data?.cast?.lora_error;
+        await interaction.reply(`Slot **${slot}** LoRA: **${st}**${err ? ` (${err})` : ''}`);
+        break;
+      }
+
+      case 'genrefs': {
+        const slot = interaction.options.getString('slot');
+        const project = await getProject(channelId);
+        const castId = await castIdForSlot(project.brief, slot);
+        if (!castId) { await interaction.reply(`Slot **${slot}** is not bound.`); break; }
+        await interaction.deferReply();
+        const start = await generateCastRefs(studioCfg(), castId, {});
+        if (!start.ok) { await interaction.editReply(friendlyHttpError(start.status, start.raw, 'the studio', 'start ref generation')); break; }
+        const jobId = start.data?.job_id || start.data?.jobId;
+        await interaction.editReply(`Generating training refs for slot **${slot}**...`);
+        const done = await pollRefsJob(castId, jobId, (t) => interaction.editReply(t).catch(() => {}));
+        if (done) {
+          castCatalogCache = null;
+          await interaction.editReply(`Training refs ready for slot **${slot}** (${done.registered || done.images?.length || '?'} image(s)). Run \`/train ${slot}\` when you are ready.`);
+        }
+        break;
+      }
+
+      case 'preflight': {
+        const project = await getProject(channelId);
+        if (!project.brief.scenes.length) { await interaction.reply('No scenes yet -- build the storyboard first.'); break; }
+        await interaction.deferReply();
+        const pf = await runPreflight(project.brief);
+        if (!pf.ok) { await interaction.editReply(pf.error); break; }
+        await interaction.editReply(formatPreflightResult(pf.result).slice(0, 2000));
+        break;
+      }
+
+      case 'renders': {
+        const limit = interaction.options.getInteger('limit') ?? 10;
+        await interaction.reply((await formatRendersList(limit)).slice(0, 2000));
+        break;
+      }
+
+      case 'saveproject': {
+        const project = await getProject(channelId);
+        const name = interaction.options.getString('name') || project.brief.title || 'Untitled';
+        await interaction.deferReply();
+        let projectId = project.brief.studio_project_id;
+        const catalog = await fetchCastCatalog();
+        const storyboard = buildStoryboardPayload(project.brief, buildCharacterRefs(project.brief, catalog));
+        if (projectId) {
+          const res = await saveProjectStoryboard(studioCfg(), projectId, storyboard);
+          if (!res.ok) { await interaction.editReply(friendlyHttpError(res.status, res.raw, 'the studio', 'save project')); break; }
+        } else {
+          const res = await createProject(studioCfg(), { name, prefs: { castBindings: project.brief.cast_bindings } });
+          if (!res.ok) { await interaction.editReply(friendlyHttpError(res.status, res.raw, 'the studio', 'create project')); break; }
+          projectId = res.data?.project?.id;
+          project.brief.studio_project_id = projectId;
+          await saveProjectStoryboard(studioCfg(), projectId, storyboard);
+          await saveProject(channelId);
+        }
+        await interaction.editReply(`Saved to studio project **${name}** (\`${projectId}\`). Load with \`/loadproject ${projectId}\`.`);
+        break;
+      }
+
+      case 'loadproject': {
+        const id = interaction.options.getString('id');
+        await interaction.deferReply();
+        const res = await getStudioProject(studioCfg(), id);
+        if (!res.ok) { await interaction.editReply(friendlyHttpError(res.status, res.raw, 'the studio', 'load project')); break; }
+        const proj = res.data?.project;
+        const project = await getProject(channelId);
+        if (proj?.storyboard) {
+          project.brief = { ...emptyBrief(), ...proj.storyboard, studio_project_id: proj.id };
+          ensureRenderSettings(project.brief);
+          if (proj.prefs?.castBindings) project.brief.cast_bindings = proj.prefs.castBindings;
+        }
+        project.brief.studio_project_id = proj?.id || id;
+        await saveProject(channelId);
+        await interaction.editReply(`Loaded studio project **${proj?.name || id}**. Use \`/brief\` to review.`);
+        break;
+      }
+
+      case 'score': {
+        const kind = interaction.options.getString('kind');
+        const prompt = interaction.options.getString('prompt') || '';
+        const gateKey = kind === 'music' ? 'score-music' : 'score-narration';
+        if (!(await requireGate(gateKey, (t) => interaction.reply(t)))) break;
+        const project = await getProject(channelId);
+        await interaction.deferReply();
+        const body = { kind };
+        if (kind === 'music') {
+          if (!prompt.trim()) { await interaction.editReply('Music needs a prompt: `/score kind:music prompt:<...>`'); break; }
+          body.prompt = prompt;
+        } else {
+          body.text = prompt.trim() || undefined;
+          if (!body.text) body.storyboard = buildStoryboardPayload(project.brief, buildCharacterRefs(project.brief, await fetchCastCatalog()));
+        }
+        const start = await startScoreBed(studioCfg(), body);
+        if (!start.ok) { await interaction.editReply(friendlyHttpError(start.status, start.raw, 'the studio', 'start score bed')); break; }
+        const jobId = start.data?.id;
+        const mod = start.data?.module;
+        await interaction.editReply(`Generating ${kind} bed...`);
+        const key = await pollScoreJob(jobId, mod, (t) => interaction.editReply(t).catch(() => {}));
+        if (key) {
+          const rs = ensureRenderSettings(project.brief);
+          rs.audio_key = key;
+          await saveProject(channelId);
+          await interaction.editReply(`${kind} bed ready (\`${key}\`). It will mux on the next render.`);
+        }
+        break;
+      }
+
+      case 'config': {
+        const project = await getProject(channelId);
+        const rs = ensureRenderSettings(project.brief);
+        const mod = interaction.options.getString('module');
+        const field = interaction.options.getString('field');
+        const value = interaction.options.getString('value');
+        if (!mod) {
+          await interaction.reply((await formatModuleConfig(rs)).slice(0, 2000));
+          break;
+        }
+        if (!field || value == null) {
+          await interaction.reply((await formatModuleConfig(rs, mod)).slice(0, 2000));
+          break;
+        }
+        const set = setModuleConfigField(rs, mod, field, value);
+        await saveProject(channelId);
+        await interaction.reply(`Set **${mod}**.${field} = ${JSON.stringify(set)}`);
+        break;
+      }
+
+      case 'api': {
+        const action = interaction.options.getString('action');
+        const args = interaction.options.getString('args') || '';
+        await interaction.deferReply();
+        const project = await getProject(channelId);
+        const result = await executeStudioAction(action, args, buildStudioCtx(project.brief));
+        const chunks = splitMessage(result.text);
+        await interaction.editReply(chunks[0].slice(0, 2000));
+        for (let i = 1; i < chunks.length; i++) {
+          await interaction.followUp({ content: chunks[i].slice(0, 2000) });
+        }
+        break;
+      }
+
+      case 'conformance': {
+        const text = formatConformanceReport({ compact: true });
+        const chunks = splitMessage(text);
+        await interaction.reply(chunks[0].slice(0, 2000));
+        for (let i = 1; i < chunks.length; i++) {
+          await interaction.followUp({ content: chunks[i].slice(0, 2000) });
+        }
         break;
       }
 
@@ -1817,16 +2572,149 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
+  if (rawText === '!commands' || rawText === '!help') {
+    const gates = await studioGates();
+    for (const chunk of splitMessage(formatAvailableCommands(gates))) await message.reply(chunk);
+    return;
+  }
+
+  if (rawText === '!hooks') {
+    if (!(await requireGate('hooks', (t) => message.reply(t).catch(() => {})))) return;
+    const project = await getProject(channelId);
+    const registry = await fetchRegistry();
+    for (const chunk of splitMessage(formatHooksStatus(registry, project.brief.render_settings))) await message.reply(chunk);
+    return;
+  }
+
+  if (rawText.startsWith('!tier')) {
+    const project = await getProject(channelId);
+    const rs = ensureRenderSettings(project.brief);
+    const arg = rawText.slice('!tier'.length).trim();
+    const registry = await fetchRegistry();
+    if (!arg) {
+      await message.reply(formatTierList(registry, rs.quality_tier)).catch(() => {});
+      return;
+    }
+    const tiers = qualityTiers(registry);
+    if (!tiers.some((t) => t.value === arg)) {
+      await message.reply(`Unknown tier \`${arg}\`. Use \`!tier\` to list options.`).catch(() => {});
+      return;
+    }
+    rs.quality_tier = arg;
+    await saveProject(channelId);
+    await message.reply(`Quality tier set to **${arg}**.`).catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!keyframe')) {
+    const project = await getProject(channelId);
+    const rs = ensureRenderSettings(project.brief);
+    if (!(await requireGate('keyframe', (t) => message.reply(t).catch(() => {})))) return;
+    const arg = rawText.slice('!keyframe'.length).trim();
+    if (!arg) {
+      await message.reply(await formatKeyframeList(rs.keyframe_backend)).catch(() => {});
+      return;
+    }
+    const r = await resolveKeyframe(arg);
+    if (r.error) { await message.reply(r.error).catch(() => {}); return; }
+    rs.keyframe_backend = r.value;
+    await saveProject(channelId);
+    await message.reply(r.value ? `Keyframe module set to **${r.value}**.` : 'Keyframe module set to **auto**.').catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!keyframes-only') || rawText.startsWith('!keyframesonly')) {
+    const project = await getProject(channelId);
+    const rs = ensureRenderSettings(project.brief);
+    if (!(await requireGate('keyframes-only', (t) => message.reply(t).catch(() => {})))) return;
+    const arg = rawText.split(/\s+/)[1]?.toLowerCase();
+    if (arg !== 'on' && arg !== 'off') {
+      await message.reply('Usage: `!keyframes-only on` or `!keyframes-only off`').catch(() => {});
+      return;
+    }
+    rs.keyframes_only = arg === 'on';
+    await saveProject(channelId);
+    await message.reply(rs.keyframes_only ? 'Keyframes-only mode **on**.' : 'Keyframes-only mode **off**.').catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!autodirect')) {
+    const intensity = rawText.split(/\s+/)[1] || 'medium';
+    await runAutodirect(channelId, intensity, (t) => message.reply(t).catch(() => {}));
+    return;
+  }
+
+  if (rawText.startsWith('!install-config') || rawText.startsWith('!installconfig')) {
+    const prefix = rawText.startsWith('!install-config') ? '!install-config' : '!installconfig';
+    const parts = rawText.slice(prefix.length).trim().split(/\s+/);
+    const registry = await fetchRegistry();
+    if (!(await requireGate('install-config', (t) => message.reply(t).catch(() => {})))) return;
+    if (!parts[0]) {
+      for (const chunk of splitMessage(formatInstallConfig(registry))) await message.reply(chunk);
+      return;
+    }
+    if (!parts[1] || parts[2] == null) {
+      for (const chunk of splitMessage(formatInstallConfig(registry, parts[0]))) await message.reply(chunk);
+      return;
+    }
+    const mod = parts[0];
+    const field = parts[1];
+    const value = parts.slice(2).join(' ');
+    const body = { [field]: value === 'true' ? true : value === 'false' ? false : (/^-?\d+$/.test(value) ? parseInt(value, 10) : value) };
+    const res = await patchModuleInstallConfig(studioCfg(), mod, body);
+    await message.reply(res.ok
+      ? `Install config **${mod}**.${field} updated.`
+      : friendlyHttpError(res.status, res.raw, 'the studio', 'patch install config')).catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!dialogue')) {
+    const project = await getProject(channelId);
+    const rs = ensureRenderSettings(project.brief);
+    if (!(await requireGate('voices', (t) => message.reply(t).catch(() => {})))) return;
+    const registry = await fetchRegistry();
+    const arg = rawText.slice('!dialogue'.length).trim();
+    if (!arg) {
+      await message.reply(formatPickOneList('dialogue', registry, rs, '!dialogue')).catch(() => {});
+      return;
+    }
+    const r = resolvePickOne(registry, 'dialogue', arg);
+    if (r.error) { await message.reply(r.error).catch(() => {}); return; }
+    rs.dialogue_backend = r.value;
+    await saveProject(channelId);
+    await message.reply(r.value ? `Dialogue module set to **${r.value}**.` : 'Dialogue module set to **auto**.').catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!castimage')) {
+    const project = await getProject(channelId);
+    const rs = ensureRenderSettings(project.brief);
+    if (!(await requireGate('cast-image', (t) => message.reply(t).catch(() => {})))) return;
+    const registry = await fetchRegistry();
+    const arg = rawText.slice('!castimage'.length).trim();
+    if (!arg) {
+      await message.reply(formatPickOneList('cast.image', registry, rs, '!castimage')).catch(() => {});
+      return;
+    }
+    const r = resolvePickOne(registry, 'cast.image', arg);
+    if (r.error) { await message.reply(r.error).catch(() => {}); return; }
+    rs.cast_image_backend = r.value;
+    await saveProject(channelId);
+    await message.reply(r.value ? `cast.image module set to **${r.value}**.` : 'cast.image module set to **auto**.').catch(() => {});
+    return;
+  }
+
   if (rawText.startsWith('!backend')) {
     const arg     = rawText.slice('!backend'.length).trim();
     const project = await getProject(channelId);
     const rs      = ensureRenderSettings(project.brief);
+    if (!(await requireGate('backend', (t) => message.reply(t).catch(() => {})))) return;
     if (!arg) { await message.reply(await formatBackendList(rs.motion_backend)).catch(() => {}); return; }
     const r = await resolveBackend(arg);
     if (r.error) { await message.reply(r.error).catch(() => {}); return; }
     rs.motion_backend = r.value;
     await saveProject(channelId);
-    await message.reply(r.value ? `Render backend set to **${r.value}**.` : 'Render backend set to **auto** (the studio decides).').catch(() => {});
+    await message.reply(r.value ? `Motion backend set to **${r.value}**.` : 'Motion backend set to **auto** (registry default).').catch(() => {});
     return;
   }
 
@@ -1859,6 +2747,7 @@ client.on(Events.MessageCreate, async (message) => {
     const project = await getProject(channelId);
     const rs      = ensureRenderSettings(project.brief);
     if (arg !== 'on' && arg !== 'off') { await message.reply('Usage: `!subtitles on` or `!subtitles off`').catch(() => {}); return; }
+    if (arg === 'on' && !(await requireGate('subtitles', (t) => message.reply(t).catch(() => {})))) return;
     rs.subtitles = arg === 'on';
     await saveProject(channelId);
     await message.reply(await subtitlesReply(rs.subtitles, project.brief)).catch(() => {});
@@ -1892,6 +2781,412 @@ client.on(Events.MessageCreate, async (message) => {
         ? '\n(Heads up: in this channel I only hear you when you @mention me -- put an @ me on your `ship it`.)'
         : '';
       await say(buildSubmitHuddle(project.brief) + hint);
+    }
+    return;
+  }
+
+  if (rawText === '!cast' || rawText.startsWith('!cast ')) {
+    const roster = await fetchCastCatalog(true);
+    for (const chunk of splitMessage(formatCastRoster(roster))) await message.reply(chunk);
+    return;
+  }
+
+  if (rawText.startsWith('!bind ')) {
+    const parts = rawText.split(/\s+/);
+    const slot = parts[1]?.toUpperCase();
+    const query = parts.slice(2).join(' ');
+    if (!['A', 'B', 'C', 'D'].includes(slot) || !query) {
+      await message.reply('Usage: `!bind <A|B|C|D> <studio character name or id>`').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const r = await bindSlotToStudioCast(project.brief, slot, query);
+    await message.reply(r.ok ? r.message : r.error).catch(() => {});
+    if (r.ok) await saveProject(channelId);
+    return;
+  }
+
+  if (rawText.startsWith('!unbind')) {
+    const slot = rawText.split(/\s+/)[1]?.toUpperCase();
+    if (!['A', 'B', 'C', 'D'].includes(slot)) {
+      await message.reply('Usage: `!unbind <A|B|C|D>`').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const had = unbindSlot(project.brief, slot);
+    await saveProject(channelId);
+    await message.reply(had ? `Slot **${slot}** unbound.` : `Slot **${slot}** was not bound.`).catch(() => {});
+    return;
+  }
+
+  if (rawText === '!voices') {
+    if (!(await requireGate('voices', (t) => message.reply(t).catch(() => {})))) return;
+    for (const chunk of splitMessage(await formatVoicesList())) await message.reply(chunk);
+    return;
+  }
+
+  if (rawText.startsWith('!voice ')) {
+    if (!(await requireGate('voices', (t) => message.reply(t).catch(() => {})))) return;
+    const parts = rawText.split(/\s+/);
+    const slot = parts[1]?.toUpperCase();
+    const voiceId = parts[2];
+    if (!['A', 'B', 'C', 'D'].includes(slot) || !voiceId) {
+      await message.reply('Usage: `!voice <A|B|C|D> <voice_id>` (see `!voices`)').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const castId = await castIdForSlot(project.brief, slot);
+    if (!castId) { await message.reply(`Slot **${slot}** is not bound.`).catch(() => {}); return; }
+    const res = await updateCast(studioCfg(), castId, { voice_id: voiceId });
+    await message.reply(res.ok ? `Voice set to **${voiceId}**.` : friendlyHttpError(res.status, res.raw, 'the studio', 'set voice')).catch(() => {});
+    if (res.ok) castCatalogCache = null;
+    return;
+  }
+
+  if (rawText.startsWith('!train ')) {
+    const slot = rawText.split(/\s+/)[1]?.toUpperCase();
+    if (!['A', 'B', 'C', 'D'].includes(slot)) {
+      await message.reply('Usage: `!train <A|B|C|D>`').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const castId = await castIdForSlot(project.brief, slot);
+    if (!castId) { await message.reply(`Slot **${slot}** is not bound.`).catch(() => {}); return; }
+    await message.reply(`Starting LoRA training for slot **${slot}**...`).catch(() => {});
+    const res = await trainCastLora(studioCfg(), castId, {});
+    await message.reply(res.ok ? `Training started (job \`${res.data?.jobId || '?'}\`).` : friendlyHttpError(res.status, res.raw, 'the studio', 'train LoRA')).catch(() => {});
+    if (res.ok) castCatalogCache = null;
+    return;
+  }
+
+  if (rawText.startsWith('!lorastatus')) {
+    const slot = rawText.split(/\s+/)[1]?.toUpperCase();
+    const project = await getProject(channelId);
+    const castId = await castIdForSlot(project.brief, slot);
+    if (!castId) { await message.reply(`Slot **${slot}** is not bound.`).catch(() => {}); return; }
+    const res = await getCastLoraStatus(studioCfg(), castId);
+    const st = res.data?.lora_status || 'unknown';
+    await message.reply(res.ok ? `LoRA status: **${st}**` : friendlyHttpError(res.status, res.raw, 'the studio', 'check status')).catch(() => {});
+    return;
+  }
+
+  if (rawText === '!preflight') {
+    const project = await getProject(channelId);
+    if (!project.brief.scenes.length) { await message.reply('No scenes yet.').catch(() => {}); return; }
+    const pf = await runPreflight(project.brief);
+    for (const chunk of splitMessage(pf.ok ? formatPreflightResult(pf.result) : pf.error)) await message.reply(chunk);
+    return;
+  }
+
+  if (rawText.startsWith('!renders')) {
+    const limit = parseInt(rawText.split(/\s+/)[1] || '10', 10) || 10;
+    for (const chunk of splitMessage(await formatRendersList(limit))) await message.reply(chunk);
+    return;
+  }
+
+  if (rawText.startsWith('!config')) {
+    const parts = rawText.slice('!config'.length).trim().split(/\s+/);
+    const project = await getProject(channelId);
+    const rs = ensureRenderSettings(project.brief);
+    if (!parts[0]) {
+      for (const chunk of splitMessage(await formatModuleConfig(rs))) await message.reply(chunk);
+      return;
+    }
+    if (!parts[1] || parts[2] == null) {
+      for (const chunk of splitMessage(await formatModuleConfig(rs, parts[0]))) await message.reply(chunk);
+      return;
+    }
+    const val = setModuleConfigField(rs, parts[0], parts[1], parts.slice(2).join(' '));
+    await saveProject(channelId);
+    await message.reply(`Set **${parts[0]}**.${parts[1]} = ${JSON.stringify(val)}`).catch(() => {});
+    return;
+  }
+
+  if (rawText === '!api' || rawText === '!api help' || rawText === '!studio' || rawText === '!studio help') {
+    await replyApi(channelId, 'help', '', (t) => message.reply(t).catch(() => {}));
+    return;
+  }
+
+  if (await handleStudioCommandAlias(rawText, channelId, (t) => message.reply(t).catch(() => {}))) return;
+
+  if (rawText.startsWith('!api ') || rawText.startsWith('!studio ')) {
+    const prefix = rawText.startsWith('!api ') ? '!api ' : '!studio ';
+    const rest = rawText.slice(prefix.length).trim();
+    const space = rest.indexOf(' ');
+    const action = space === -1 ? rest : rest.slice(0, space);
+    const args = space === -1 ? '' : rest.slice(space + 1);
+    await replyApi(channelId, action, args, (t) => message.reply(t).catch(() => {}));
+    return;
+  }
+
+  if (rawText.startsWith('!genrefs')) {
+    const slot = rawText.split(/\s+/)[1]?.toUpperCase();
+    if (!['A', 'B', 'C', 'D'].includes(slot)) {
+      await message.reply('Usage: `!genrefs <A|B|C|D>`').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const castId = await castIdForSlot(project.brief, slot);
+    if (!castId) { await message.reply(`Slot **${slot}** is not bound.`).catch(() => {}); return; }
+    await message.reply(`Generating training refs for slot **${slot}**...`).catch(() => {});
+    const start = await generateCastRefs(studioCfg(), castId, {});
+    if (!start.ok) { await message.reply(friendlyHttpError(start.status, start.raw, 'the studio', 'start ref generation')).catch(() => {}); return; }
+    const jobId = start.data?.job_id || start.data?.jobId;
+    const done = await pollRefsJob(castId, jobId, (t) => message.reply(t).catch(() => {}));
+    if (done) {
+      castCatalogCache = null;
+      await message.reply(`Training refs ready for slot **${slot}** (${done.registered || done.images?.length || '?'} image(s)). Run \`!train ${slot}\` when ready.`).catch(() => {});
+    }
+    return;
+  }
+
+  if (rawText.startsWith('!saveproject')) {
+    const name = rawText.slice('!saveproject'.length).trim() || undefined;
+    const project = await getProject(channelId);
+    const projectName = name || project.brief.title || 'Untitled';
+    let projectId = project.brief.studio_project_id;
+    const catalog = await fetchCastCatalog();
+    const storyboard = buildStoryboardPayload(project.brief, buildCharacterRefs(project.brief, catalog));
+    if (projectId) {
+      const res = await saveProjectStoryboard(studioCfg(), projectId, storyboard);
+      if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'save project')).catch(() => {}); return; }
+    } else {
+      const res = await createProject(studioCfg(), { name: projectName, prefs: { castBindings: project.brief.cast_bindings } });
+      if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'create project')).catch(() => {}); return; }
+      projectId = res.data?.project?.id;
+      project.brief.studio_project_id = projectId;
+      await saveProjectStoryboard(studioCfg(), projectId, storyboard);
+      await saveProject(channelId);
+    }
+    await message.reply(`Saved to studio project **${projectName}** (\`${projectId}\`). Load with \`!loadproject ${projectId}\`.`).catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!loadproject ')) {
+    const id = rawText.slice('!loadproject'.length).trim();
+    if (!id) { await message.reply('Usage: `!loadproject <project-id>`').catch(() => {}); return; }
+    const res = await getStudioProject(studioCfg(), id);
+    if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'load project')).catch(() => {}); return; }
+    const proj = res.data?.project;
+    const project = await getProject(channelId);
+    if (proj?.storyboard) {
+      project.brief = { ...emptyBrief(), ...proj.storyboard, studio_project_id: proj.id };
+      ensureRenderSettings(project.brief);
+      if (proj.prefs?.castBindings) project.brief.cast_bindings = proj.prefs.castBindings;
+    }
+    project.brief.studio_project_id = proj?.id || id;
+    await saveProject(channelId);
+    await message.reply(`Loaded studio project **${proj?.name || id}**. Use \`!brief\` to review.`).catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!score ')) {
+    const parts = rawText.split(/\s+/);
+    const kind = parts[1];
+    const prompt = parts.slice(2).join(' ');
+    if (kind !== 'music' && kind !== 'narration') {
+      await message.reply('Usage: `!score music <prompt>` or `!score narration [text]`').catch(() => {});
+      return;
+    }
+    const gateKey = kind === 'music' ? 'score-music' : 'score-narration';
+    if (!(await requireGate(gateKey, (t) => message.reply(t).catch(() => {})))) return;
+    const project = await getProject(channelId);
+    const body = { kind };
+    if (kind === 'music') {
+      if (!prompt.trim()) { await message.reply('Music needs a prompt: `!score music <prompt>`').catch(() => {}); return; }
+      body.prompt = prompt;
+    } else {
+      body.text = prompt.trim() || undefined;
+      if (!body.text) body.storyboard = buildStoryboardPayload(project.brief, buildCharacterRefs(project.brief, await fetchCastCatalog()));
+    }
+    await message.reply(`Generating ${kind} bed...`).catch(() => {});
+    const start = await startScoreBed(studioCfg(), body);
+    if (!start.ok) { await message.reply(friendlyHttpError(start.status, start.raw, 'the studio', 'start score bed')).catch(() => {}); return; }
+    const jobId = start.data?.id;
+    const mod = start.data?.module;
+    const key = await pollScoreJob(jobId, mod, (t) => message.reply(t).catch(() => {}));
+    if (key) {
+      const rs = ensureRenderSettings(project.brief);
+      rs.audio_key = key;
+      await saveProject(channelId);
+      await message.reply(`${kind} bed ready (\`${key}\`). It will mux on the next render.`).catch(() => {});
+    }
+    return;
+  }
+
+  if (rawText === '!importcast' || rawText.startsWith('!importcast ')) {
+    const att = message.attachments.find((a) => a.name?.endsWith('.vvcast') || a.contentType?.includes('tar'));
+    if (!att) { await message.reply('Attach a `.vvcast` file to import a character.').catch(() => {}); return; }
+    await message.reply('Importing cast bundle...').catch(() => {});
+    try {
+      const buf = await fetchAttachmentBuffer(att);
+      const res = await importCast(studioCfg(), buf);
+      if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'import cast')).catch(() => {}); return; }
+      castCatalogCache = null;
+      const c = res.data?.cast;
+      await message.reply(`Imported **${c?.name || 'character'}** (\`${c?.id}\`). Bind with \`!bind <slot> ${c?.name || c?.id}\`.`).catch(() => {});
+    } catch (e) {
+      await message.reply(`Import failed: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (rawText === '!upload' || rawText.startsWith('!upload ')) {
+    const att = message.attachments.find((a) => a.contentType?.startsWith('image/'));
+    if (!att) { await message.reply('Attach an image to upload to staged storage (`/api/upload`).').catch(() => {}); return; }
+    try {
+      const buf = await fetchAttachmentBuffer(att);
+      const res = await uploadImage(studioCfg(), buf, att.contentType || 'image/png');
+      if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'upload image')).catch(() => {}); return; }
+      const key = res.data?.key;
+      await message.reply(`Uploaded \`${key}\`. Use in API args as \`key:${key}\` or set on render via module config.`).catch(() => {});
+    } catch (e) {
+      await message.reply(`Upload failed: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (rawText === '!audioupload' || rawText.startsWith('!audioupload ')) {
+    const att = message.attachments.find((a) => a.contentType?.startsWith('audio/'));
+    if (!att) { await message.reply('Attach an audio file to stage for render mux.').catch(() => {}); return; }
+    try {
+      const buf = await fetchAttachmentBuffer(att);
+      const res = await uploadAudio(studioCfg(), buf, att.contentType || 'audio/mpeg');
+      if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'upload audio')).catch(() => {}); return; }
+      const key = res.data?.key;
+      const project = await getProject(channelId);
+      const rs = ensureRenderSettings(project.brief);
+      rs.audio_key = key;
+      await saveProject(channelId);
+      await message.reply(`Audio staged as \`${key}\`. It will mux on the next render.`).catch(() => {});
+    } catch (e) {
+      await message.reply(`Audio upload failed: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (rawText.startsWith('!addref ')) {
+    const slot = rawText.split(/\s+/)[1]?.toUpperCase();
+    const att = message.attachments.find((a) => a.contentType?.startsWith('image/'));
+    if (!['A', 'B', 'C', 'D'].includes(slot) || !att) {
+      await message.reply('Usage: attach an image with `!addref <A|B|C|D>` (slot must be bound).').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const castId = await castIdForSlot(project.brief, slot);
+    if (!castId) { await message.reply(`Slot **${slot}** is not bound.`).catch(() => {}); return; }
+    try {
+      const buf = await fetchAttachmentBuffer(att);
+      const mime = att.contentType || 'image/png';
+      const up = await uploadImage(studioCfg(), buf, mime);
+      if (!up.ok) { await message.reply(friendlyHttpError(up.status, up.raw, 'the studio', 'upload ref')).catch(() => {}); return; }
+      const res = await addCastRef(studioCfg(), castId, { key: up.data.key, mime });
+      if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'add cast ref')).catch(() => {}); return; }
+      castCatalogCache = null;
+      await message.reply(`Training ref added to slot **${slot}** (\`${up.data.key}\`).`).catch(() => {});
+    } catch (e) {
+      await message.reply(`Add ref failed: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (rawText.startsWith('!addsource ')) {
+    const slot = rawText.split(/\s+/)[1]?.toUpperCase();
+    const att = message.attachments.find((a) => a.contentType?.startsWith('image/'));
+    if (!['A', 'B', 'C', 'D'].includes(slot) || !att) {
+      await message.reply('Usage: attach an image with `!addsource <A|B|C|D>` (slot must be bound).').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const castId = await castIdForSlot(project.brief, slot);
+    if (!castId) { await message.reply(`Slot **${slot}** is not bound.`).catch(() => {}); return; }
+    try {
+      const buf = await fetchAttachmentBuffer(att);
+      const mime = att.contentType || 'image/png';
+      const up = await uploadImage(studioCfg(), buf, mime);
+      if (!up.ok) { await message.reply(friendlyHttpError(up.status, up.raw, 'the studio', 'upload source')).catch(() => {}); return; }
+      const res = await addCastSource(studioCfg(), castId, { key: up.data.key, mime });
+      if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'add cast source')).catch(() => {}); return; }
+      castCatalogCache = null;
+      await message.reply(`Source photo added to slot **${slot}** (\`${up.data.key}\`).`).catch(() => {});
+    } catch (e) {
+      await message.reply(`Add source failed: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (rawText.startsWith('!delref ')) {
+    const parts = rawText.split(/\s+/);
+    const slot = parts[1]?.toUpperCase();
+    const refKey = parts[2];
+    if (!['A', 'B', 'C', 'D'].includes(slot) || !refKey) {
+      await message.reply('Usage: `!delref <A|B|C|D> <ref-key>`').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const castId = await castIdForSlot(project.brief, slot);
+    if (!castId) { await message.reply(`Slot **${slot}** is not bound.`).catch(() => {}); return; }
+    const res = await deleteCastRef(studioCfg(), castId, { key: refKey });
+    if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'delete cast ref')).catch(() => {}); return; }
+    castCatalogCache = null;
+    await message.reply(`Removed ref \`${refKey}\` from slot **${slot}**.`).catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!delsource ')) {
+    const parts = rawText.split(/\s+/);
+    const slot = parts[1]?.toUpperCase();
+    const sourceKey = parts[2];
+    if (!['A', 'B', 'C', 'D'].includes(slot) || !sourceKey) {
+      await message.reply('Usage: `!delsource <A|B|C|D> <source-key>`').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const castId = await castIdForSlot(project.brief, slot);
+    if (!castId) { await message.reply(`Slot **${slot}** is not bound.`).catch(() => {}); return; }
+    const res = await deleteCastSource(studioCfg(), castId, { key: sourceKey });
+    if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'delete cast source')).catch(() => {}); return; }
+    castCatalogCache = null;
+    await message.reply(`Removed source \`${sourceKey}\` from slot **${slot}**.`).catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!clearportrait')) {
+    const slot = rawText.split(/\s+/)[1]?.toUpperCase();
+    if (!['A', 'B', 'C', 'D'].includes(slot)) {
+      await message.reply('Usage: `!clearportrait <A|B|C|D>`').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const castId = await castIdForSlot(project.brief, slot);
+    if (!castId) { await message.reply(`Slot **${slot}** is not bound.`).catch(() => {}); return; }
+    const res = await deleteCastPortrait(studioCfg(), castId);
+    if (!res.ok) { await message.reply(friendlyHttpError(res.status, res.raw, 'the studio', 'clear portrait')).catch(() => {}); return; }
+    castCatalogCache = null;
+    await message.reply(`Portrait cleared for slot **${slot}**.`).catch(() => {});
+    return;
+  }
+
+  if (rawText.startsWith('!characterref ')) {
+    const slot = rawText.split(/\s+/)[1]?.toUpperCase();
+    const att = message.attachments.find((a) => a.contentType?.startsWith('image/'));
+    if (!['A', 'B', 'C', 'D'].includes(slot) || !att) {
+      await message.reply('Usage: attach an image with `!characterref <A|B|C|D>` for storyboard refs.').catch(() => {});
+      return;
+    }
+    const project = await getProject(channelId);
+    const ch = project.brief.cast.find((c) => c.slot === slot);
+    if (!ch) { await message.reply(`No character in slot **${slot}** yet.`).catch(() => {}); return; }
+    try {
+      const buf = await fetchAttachmentBuffer(att);
+      const mime = att.contentType || 'image/png';
+      const up = await uploadCharacterRef(studioCfg(), buf, mime);
+      if (!up.ok) { await message.reply(friendlyHttpError(up.status, up.raw, 'the studio', 'upload character ref')).catch(() => {}); return; }
+      ch.portraitKey = up.data.key;
+      await saveProject(channelId);
+      await message.reply(`Character ref staged for slot **${slot}** (\`${up.data.key}\`).`).catch(() => {});
+    } catch (e) {
+      await message.reply(`Character ref upload failed: ${e.message}`).catch(() => {});
     }
     return;
   }

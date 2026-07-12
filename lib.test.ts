@@ -6,6 +6,10 @@ import {
   parseCreditLines,
   subtitleEnableField,
   buildCharacterRefs,
+  buildCastLoras,
+  characterRefFromStudioMember,
+  resolveCastMember,
+  formatPreflightResult,
   matchBackend,
   pickAutoMotionBackend,
 } from './lib.mjs';
@@ -131,12 +135,12 @@ describe('subtitleEnableField', () => {
 });
 
 describe('buildCharacterRefs', () => {
-  it('includes only cast with both a studio castId and an uploaded portraitKey', () => {
+  it('includes only cast with both a studio castId and an uploaded portraitKey (inline path)', () => {
     const brief = {
       cast: [
         { slot: 'A', name: 'Ada', castId: 'c1', portraitKey: 'k1' },
-        { slot: 'B', name: 'Ben', castId: 'c2' },              // no portraitKey -> dropped
-        { slot: 'C', name: 'Cy', portraitKey: 'k3' },          // no castId -> dropped
+        { slot: 'B', name: 'Ben', castId: 'c2' },
+        { slot: 'C', name: 'Cy', portraitKey: 'k3' },
       ],
     };
     expect(buildCharacterRefs(brief)).toEqual({
@@ -144,9 +148,58 @@ describe('buildCharacterRefs', () => {
     });
   });
 
+  it('builds refs from bound studio cast members (portrait + ref_keys)', () => {
+    const brief = {
+      cast_bindings: { A: 'cast-uuid' },
+      cast: [{ slot: 'A', name: 'Wren', prompt: 'a pilot' }],
+    };
+    const catalog = [{
+      id: 'cast-uuid',
+      name: 'Wren',
+      bible: 'brave pilot',
+      portrait_key: 'p1',
+      ref_keys: ['r1', 'r2'],
+    }];
+    expect(buildCharacterRefs(brief, catalog)).toEqual({
+      A: {
+        name: 'Wren',
+        prompt: 'brave pilot',
+        portrait: { key: 'p1' },
+        trainingImages: [{ key: 'p1' }, { key: 'r1' }, { key: 'r2' }],
+      },
+    });
+  });
+
   it('returns an empty map when no cast qualifies', () => {
     expect(buildCharacterRefs({ cast: [] })).toEqual({});
     expect(buildCharacterRefs({ cast: [{ slot: 'A', name: 'Ada' }] })).toEqual({});
+  });
+});
+
+describe('buildCastLoras', () => {
+  it('maps slot bindings to cast ids', () => {
+    expect(buildCastLoras({ A: 'id-a', B: 'id-b' })).toEqual({ A: 'id-a', B: 'id-b' });
+    expect(buildCastLoras({})).toEqual({});
+  });
+});
+
+describe('resolveCastMember', () => {
+  const catalog = [{ id: 'uuid-wren', name: 'Wren' }, { id: 'uuid-mara', name: 'Mara' }];
+  it('matches by id or name', () => {
+    expect(resolveCastMember(catalog, 'uuid-wren')).toEqual(catalog[0]);
+    expect(resolveCastMember(catalog, 'wren')).toEqual(catalog[0]);
+  });
+});
+
+describe('formatPreflightResult', () => {
+  it('summarizes ok and blocked runs', () => {
+    expect(formatPreflightResult({ ok: true, counts: { error: 0, warning: 1, info: 0 }, issues: [] }))
+      .toContain('OK');
+    expect(formatPreflightResult({
+      ok: false,
+      counts: { error: 1, warning: 0, info: 0 },
+      issues: [{ level: 'error', message: 'LoRA not ready' }],
+    })).toContain('blocked');
   });
 });
 

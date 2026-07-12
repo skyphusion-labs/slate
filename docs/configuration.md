@@ -124,11 +124,10 @@ to a Vivijure Studio.
 
 ### `STUDIO_API_TOKEN`
 - **What:** the Studio's API token (a bearer token).
-- **Why:** the Studio checks this token on every request Slate makes (storyboard
-  bundle, cast sync, portrait upload, render submit, status). It is how Slate
-  proves it is allowed to drive your Studio. **Required whenever
-  `VIVIJURE_API_URL` is set** -- Slate refuses to start without it rather than
-  fire calls that would be turned away.
+- **Why:** the Studio checks this token on every request Slate makes (cast, bundle, preflight,
+  render, projects, score, module config, and all `!api` routes). It is how Slate proves it is
+  allowed to drive your Studio. **Required whenever `VIVIJURE_API_URL` is set** -- Slate refuses
+  to start without it rather than fire calls that would be turned away.
 - **Where:** your Studio prints (or lets you mint) this token when you deploy it;
   see the Studio's own quickstart. Paste the same value here.
 - **Example:** `STUDIO_API_TOKEN=vjs_live_...`
@@ -294,3 +293,12 @@ Slate's logs and stores them in an R2 bucket named `slate-logs` (set in
 
 Create the bucket once with `npx wrangler r2 bucket create slate-logs`, then
 `npm run deploy` from `log-worker/`.
+
+---
+
+## Further reading
+
+- **[commands.md](commands.md)** -- full Discord command reference, module gates, studio API parity
+- **[CONTRACT-conformance.md](CONTRACT-conformance.md)** -- 69-route API matrix (CI-enforced)
+- **[constellation.md](constellation.md)** -- where Slate fits in the Vivijure map
+- **[quickstart.md](quickstart.md)** -- first-run walkthrough

@@ -3,6 +3,29 @@
 Notable changes per release. SemVer-style (pre-1.0: PATCH for fixes / backend-only tweaks, MINOR
 for new features). Newest first.
 
+## Unreleased
+
+## v0.3.0 (2026-07-12)
+
+- **Full studio API parity** -- `studio.mjs` HTTP client for all 68 Vivijure CONTRACT routes;
+  `studio-api.mjs` action registry; `!api` / `/api` universal dispatcher.
+- **Cast workflows** -- `!cast`, `!bind`, `!unbind`, `!train`, `!lorastatus`, `!genrefs`, `!voices`,
+  `!voice`; cast bindings send `cast_loras` on render; attachment uploads for import/refs/sources.
+- **Registry projection** -- `registry.mjs` mirrors planner-registry.js; hook catalog, pick_one
+  choosers, module config formatters, and command availability gates from `GET /api/modules`.
+- **Module-gated commands** -- `!commands` / `/commands` lists only what installed modules support;
+  gated commands (`!backend`, `!keyframe`, `!subtitles`, `!score`, `!voices`, `!autodirect`, ...)
+  fail fast with a clear reason when the module is missing.
+- **Render settings parity** -- `!tier`, `!keyframe`, `!keyframes-only`, `!config`,
+  `!install-config`, `!hooks`; keyframes-only submits `keyframes_only` on film render.
+- **Studio projects** -- `!saveproject`, `!loadproject`, `!renders`, `!preflight`.
+- **Score + enhance** -- `!score music|narration`, `!autodirect` (plan.enhance).
+- **CONTRACT conformance** -- `contract.mjs` maps 69 studio routes (68 CONTRACT + `render-retry`);
+  `contract.test.ts` CI gate; `!conformance` / `/conformance`; control-panel bang aliases
+  (`!plan`, `!refine`, `!scatter`, render-library ops, etc.); [docs/CONTRACT-conformance.md](docs/CONTRACT-conformance.md).
+- **Documentation** -- canonical [docs/commands.md](docs/commands.md), [docs/CONTRACT-conformance.md](docs/CONTRACT-conformance.md);
+  README, CLAUDE.md, configuration, constellation, CONTRIBUTING updated for v0.3.0 parity.
+
 ## v0.2.1
 
 - **Explicit motion backend on full renders** (#58) -- Slate now always sends an explicit, serving
