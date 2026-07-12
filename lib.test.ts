@@ -14,6 +14,7 @@ import {
   pickAutoMotionBackend,
   pickAutoBind,
   buildCastContextBlock,
+  buildStoryboardPayload,
 } from './lib.mjs';
 
 // Real unit tests over the pure helpers extracted from bot.mjs. No Discord client, no network,
@@ -359,5 +360,58 @@ describe("buildCastContextBlock (#84 cast-blind brain fix)", () => {
   it("tells the brain it can see the cast (anti-confabulation)", () => {
     expect(buildCastContextBlock({ cast: [], cast_bindings: {} }, catalog))
       .toContain("NEVER tell the user to run a command");
+  });
+});
+
+// The studio storyboard validator (vivijure storyboard-validate.ts) accepts scene.dialogue ONLY as
+// { slot, text }; a bare string 400s the bundle. These pin the shape slate puts on the wire so a
+// future edit that re-introduces a string dialogue (the audited silent-failure regression) fails CI.
+describe("buildStoryboardPayload dialogue shape (studio contract)", () => {
+  const refs = { A: { name: "Wren" }, B: { name: "Nova" } };
+  it("never emits a bare string dialogue for any scene shape", () => {
+    const brief = {
+      title: "T",
+      scenes: [
+        { id: "s1", prompt: "p", character_slots: ["A"], dialogue: "Hello there" },
+        { id: "s2", prompt: "p", character_slots: ["A", "B"], dialogue: "Who spoke?" },
+        { id: "s3", prompt: "p", character_slots: [], dialogue: "Nobody here" },
+        { id: "s4", prompt: "p", character_slots: ["A"] },
+      ],
+    };
+    const out = buildStoryboardPayload(brief, refs);
+    for (const sc of out.scenes) {
+      expect(typeof sc.dialogue).not.toBe("string");
+      if (sc.dialogue !== undefined) {
+        expect(sc.dialogue).toMatchObject({ slot: expect.any(String), text: expect.any(String) });
+      }
+    }
+  });
+  it("attributes a spoken line to the single speaking slot as { slot, text }", () => {
+    const brief = { title: "T", scenes: [{ id: "s1", prompt: "p", character_slots: ["A"], dialogue: "  Hello  " }] };
+    const out = buildStoryboardPayload(brief, refs);
+    expect(out.scenes[0].dialogue).toEqual({ slot: "A", text: "Hello" });
+  });
+  it("omits dialogue (no string, no wrong speaker) when the speaker is ambiguous or absent", () => {
+    const brief = {
+      title: "T",
+      scenes: [
+        { id: "s1", prompt: "p", character_slots: ["A", "B"], dialogue: "ambiguous" },
+        { id: "s2", prompt: "p", character_slots: [], dialogue: "no slots" },
+      ],
+    };
+    const out = buildStoryboardPayload(brief, refs);
+    expect(out.scenes[0].dialogue).toBeUndefined();
+    expect(out.scenes[1].dialogue).toBeUndefined();
+  });
+  it("carries the top-level authored fields the studio StoryboardInput reads", () => {
+    const brief = {
+      title: "My Film", full_prompt: "fp", style_prefix: "sp", style_category: "Noir",
+      duration_seconds: 30, clip_seconds: 5,
+      scenes: [{ id: "s1", prompt: "p", character_slots: ["A"], act: "I", target_seconds: 4 }],
+    };
+    const out = buildStoryboardPayload(brief, refs);
+    expect(out).toMatchObject({ title: "My Film", full_prompt: "fp", style_prefix: "sp", style_category: "Noir", duration_seconds: 30, clip_seconds: 5 });
+    expect(out.use_characters).toEqual(["A"]);
+    expect(out.scenes[0]).toMatchObject({ id: "s1", prompt: "p", act: "I", character_slots: ["A"], target_seconds: 4 });
   });
 });

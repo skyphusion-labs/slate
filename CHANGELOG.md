@@ -5,6 +5,16 @@ for new features). Newest first.
 
 ## Unreleased
 
+- **fix(contract): stop sending scene.dialogue as a bare string; the studio requires an object.**
+  `buildStoryboardPayload` put the brief spoken line on `scenes[].dialogue` as a plain string, but the
+  studio storyboard validator (vivijure `storyboard-validate.ts`) accepts `dialogue` ONLY as
+  `{ slot, text }`, and `assembleBundle` re-validates -- so EVERY dialogue-bearing render 400d at the
+  bundle step (a silent user failure that route-level conformance never caught). The line is now
+  attributed to the shot single speaking slot as `{ slot, text }` (so the studio voices it in that cast
+  member voice, #582), or omitted when the speaker is ambiguous/absent (the line still ships via the
+  top-level `dialogue_lines`, never a hard bundle failure). Field-level tests pin the on-the-wire shape
+  so the regression fails CI. Found in the slate<->studio field-by-field contract audit.
+
 ## v0.4.3 (2026-07-12)
 
 - **fix(chat): restore the pre-#86 conversational posture (#84).** The v0.3.0 control-panel API-parity
