@@ -6,9 +6,11 @@ Guidance for Claude Code (and the crew) working in this repo.
 
 **Slate: the Vivijure Screenwriter's Assistant for Discord.** A collaborative film-planning bot that
 maintains a storyboard brief, generates character portraits and scene thumbnails, searches the web,
-and submits projects to the Vivijure render pipeline. Currently **v0.2.0**. The GitHub repo is now
-named `slate` (it was `skyphusion-slate`; redirects still work, but use `slate`). Production runs as a
-Docker stack on the `<deploy-host>`.
+and submits projects to the Vivijure render pipeline. Currently **v0.3.0** (full studio API parity +
+control-panel conformance). The GitHub repo is named `slate` (it was
+`skyphusion-slate`; redirects still work). Production runs as a Docker stack on the deploy host.
+
+**Full command reference:** [docs/commands.md](docs/commands.md)
 
 ## Where it sits (the Vivijure constellation)
 
@@ -19,147 +21,106 @@ Docker stack on the `<deploy-host>`.
         vivijure (studio control plane / JSON API)
             |
             v
-        vivijure-backend (GPU render: keyframes -> i2v -> assemble)
+        vivijure-backend + modules (GPU render: keyframes -> i2v -> assemble)
 ```
 
-Slate is the upstream, human-facing surface: the group writes a film in Discord, Slate keeps the
-brief, and `!render` ships it to the Vivijure studio API. Backend/quality choices Slate offers are
-projected live from the studio registry, never hardcoded (see `!backend`).
+Slate is the upstream, human-facing surface. The group writes a film in Discord; Slate keeps the
+brief and ships it to the Vivijure studio API. Slate has **full control-panel parity**: every hook,
+cast workflow, render setting, and HTTP route the web UI exposes is reachable from Discord. Module
+choices are projected live from `GET /api/modules` via `registry.mjs`; commands are gated on what is
+actually installed.
 
 ## Structure
 
 ```
-bot.mjs                  Node 24+ Discord bot (main entry point, ~93KB)
-package.json             Bot deps (@anthropic-ai/sdk, discord.js); scripts: bot, lint
-bot.test.ts              Vitest smoke (imports bot.mjs against mocked env + local workers)
-search-worker/           Cloudflare Worker `slate-search`: web search + knowledge base
-  src/index.ts           Worker source
-  wrangler.toml          Bindings: BROWSER, AI, KNOWLEDGE (Vectorize: slate-knowledge)
-log-worker/              Cloudflare Worker `slate-logs`: log sink
-  wrangler.toml          Binding: LOGS (R2 bucket: slate-logs)
-stacks/
-  compose.prod.yml           Docker Compose stack for the `<deploy-host>` (production)
-  .env                   Secrets (never committed; see the compose.prod.yml header for the keys)
+bot.mjs                  Discord bot (main entry, message + slash handlers)
+lib.mjs                  Pure helpers (brief transforms, registry mapping, preflight formatting)
+registry.mjs             GET /api/modules projection (hooks, gates, formatters)
+studio.mjs               HTTP client for all studio API routes (69: 68 CONTRACT + retry)
+contract.mjs             Route-to-command matrix; STUDIO_COMMAND_ALIASES; CI validation
+studio-api.mjs           !api action registry (65 actions) + executeStudioAction()
+contract.test.ts         Vitest: zero-drift conformance gate
+lib.test.ts              Vitest unit tests for lib.mjs
+registry.test.ts         Vitest unit tests for registry.mjs
+search-worker/           Cloudflare Worker slate-search: web search + knowledge base
+log-worker/              Cloudflare Worker slate-logs: log sink
+stacks/compose.prod.yml  Docker Compose stack (production)
+docs/commands.md         Canonical command + studio parity reference
+docs/CONTRACT-conformance.md  69-route API matrix (CI-enforced)
 ```
 
-## Commands
+## Commands (developer)
 
 ```bash
-npm run lint         # node --check bot.mjs -- the CI gate for the bot (parse check)
-npm run bot          # node bot.mjs (run the bot locally; needs the env from stacks/.env)
-npx vitest run       # the smoke suite (bot.test.ts); there is no `test` npm script
-cd search-worker && npm run typecheck && npm run deploy   # the search worker
-cd log-worker && npm run typecheck && npm run deploy       # the log worker
+npm run lint         # node --check bot.mjs -- CI gate for the bot
+npm run bot          # node bot.mjs (needs env from slate.env or stacks/.env)
+npm test             # vitest: lib + registry + contract conformance
+npm run smoke:studio # offline gate + optional live studio probes
+npx vitest run       # same as npm test
+cd search-worker && npm run typecheck && npm run deploy
+cd log-worker && npm run typecheck && npm run deploy
 ```
 
 ### Verifying changes
 
-The bot is dependency-free at parse time, so `node --check bot.mjs` (`npm run lint`) is the gate, and
-the two Workers each typecheck (`npm run typecheck`). `bot.test.ts` (Vitest) is a boot smoke that
-imports `bot.mjs` against mocked tokens; the coverage workflow first brings up `log-worker` (:8787)
-and `search-worker` (:8788) via `wrangler dev` so the import path that talks to them resolves. CI is
-GitHub Actions on GitHub-hosted `ubuntu-latest` (public repo, fork-safe): `ci.yml` lints the bot +
-typechecks `search-worker`; `code-coverage.yml` runs the Vitest smoke against the two local workers;
-`deploy.yml` deploys `slate-search` and `slate-logs` on a green push to `main`. The bot itself is
-NOT deployed by CI on push: its versioned image is built on a `v*` tag (`image.yml`) and rolled out
-via the fleet IaC on the stack host (see "Running (production)" below).
+`node --check bot.mjs` (`npm run lint`) is the bot gate. Workers typecheck separately. `npm test` runs
+`lib.test.ts`, `registry.test.ts`, and `contract.test.ts` (69-route zero-drift gate). `bot.test.ts`
+is a boot smoke against mocked env. CI: `ci.yml` lints bot + typechecks search-worker;
+`code-coverage.yml` runs Vitest; `deploy.yml` deploys Workers on green push to `main`. Bot image
+builds on `v*` tags (`image.yml`).
 
-## Running (production: the bot stack)
+## Running (production)
 
-The bot (`bot.mjs`) runs as a Docker stack on the stack host, deployed by IaC. There is no manual
-`rsync` of the working tree and no `npm ci` at container start: the container is pinned to an
-immutable, versioned image built from a git tag, the pin lives in the fleet IaC repo, and the stack
-host pulls that image and recreates the container. (The two Cloudflare Workers are separate:
-`deploy.yml` auto-deploys `slate-search` and `slate-logs` on a green push to `main`, per "Verifying
-changes" above; only the bot follows the tag-driven flow below.)
-
-Release and deploy the bot:
-
-```bash
-# 1. Cut a release on a branch: bump package.json "version" + add a CHANGELOG.md entry, open a PR.
-# 2. Merge to main.
-# 3. Tag the release commit and push the tag (SemVer vX.Y.Z):
-git tag vX.Y.Z && git push origin vX.Y.Z
-```
-
-Pushing the `vX.Y.Z` tag triggers `image.yml`, which builds the bot image and pushes it to GHCR
-(`ghcr.io/skyphusion-labs/slate`) tagged with the clean version (`0.2.1`), the major.minor (`0.2`),
-and the commit sha. There is no `:latest`, so a redeploy is deterministic. To roll it out, bump the
-pinned image version in the fleet IaC repo; the stack host pulls the new image and recreates the
-container.
-
-`search-worker` (Vectorize, one-time) and the worker secrets are set via wrangler:
-```bash
-npx wrangler vectorize create slate-knowledge --dimensions=1024 --metric=cosine
-npx wrangler secret put BRAVE_API_KEY   # and TAVILY_API_KEY, SEARCH_SECRET
-```
+Bot runs as Docker on the stack host (tag-driven GHCR image). Workers deploy from CI on push to
+`main`. See README "Run your own Slate" and stacks/compose.prod.yml.
 
 ## Key architecture
 
-- **Claude Sonnet via the CF AI Gateway** (native Anthropic SDK on the `/anthropic` path). Production
-  sets `DISCORD_MODEL=claude-sonnet-4-6`; the bot.mjs code default is an ollama model
-  (`qwen3.6:27b-ctx8k`), and it falls back to ollama when `CF_AIG_TOKEN` is unset.
-- **Tool-use loop** (up to 5 rounds): `web_search` (Brave), `research` (Tavily), `fetch_page` (CF
-  Browser Rendering), `search_knowledge` (Vectorize) -- all via the `slate-search` worker.
-- **Vision**: image attachments fetched as base64 and passed to Claude as image content blocks (the
-  ollama path strips to text).
-- **D1 session state**: `sessions` (channel storyboard + history + briefHistory) and `render_jobs`
-  (pending render polling).
-- **Brief undo**: a `briefHistory` array (max 10) pushed before each brief update; `!undo` rolls back.
-- **Render polling**: a 30s interval polls Vivijure `/api/storyboard/render/:jobId` and notifies the
-  channel on completion.
-- **Registry-projected backends**: `!backend` lists motion backends live from the studio registry
-  (`GET /api/modules`, `hooks["motion.backend"]`); names are never hardcoded.
-- **Knowledge base**: Vectorize index `slate-knowledge` (1024-dim, cosine), embedded via
-  `@cf/baai/bge-large-en-v1.5`. Logs sink to the `slate-logs` worker (R2).
+- **Claude Sonnet via CF AI Gateway** (native Anthropic SDK). Falls back to ollama when
+  `CF_AIG_TOKEN` is unset.
+- **Tool-use loop** (5 rounds max): web_search, research, fetch_page, search_knowledge via
+  slate-search Worker.
+- **Vision**: image attachments as base64 to Claude (ollama path strips to text).
+- **D1 session state**: brief, history, briefHistory, render_settings, cast_bindings,
+  studio_project_id, render_jobs.
+- **Registry projection**: `registry.mjs` mirrors planner-registry.js + planner-render-config.js.
+  Hook catalog, pick_one choosers, module config, and command gates all from `GET /api/modules`.
+- **Studio client**: `studio.mjs` implements every route in the conformance matrix (`contract.mjs`).
+  `studio-api.mjs` maps 65 friendly action names for `!api`. `bot.mjs` adds ergonomic `!` commands,
+  `STUDIO_COMMAND_ALIASES`, and attachment upload flows. `!conformance` prints the live matrix.
+- **Render submit**: bundle -> preflight -> `POST /api/render/film` with mapped configs; polls every 30s.
+- **Module-gated commands**: `commandAvailability()` in registry.mjs; `!commands` lists live gates.
 
-## Commands (Discord)
+## Discord commands (summary)
 
-Both a bang prefix (`!cmd`) and a registered slash command are supported; slash options noted.
+See [docs/commands.md](docs/commands.md) for the full table. Highlights:
 
-| Command | Slash | Description |
-|---------|-------|-------------|
-| `!brief` | `/brief` | Show the current storyboard |
-| `!portrait <slot> [desc]` | `/portrait slot:<A-D> [description]` | Generate + sync a character portrait |
-| `!thumbnail <scene>` | `/thumbnail scene:<id>` | Generate a scene thumbnail |
-| `!render [quality]` | `/render [quality] [confirm]` | Submit to Vivijure (confirm skips the huddle) |
-| `!backend [choice]` | `/backend [choice]` | Pick a motion backend, `auto`, or list them |
-| `!titlecard ...` | `/titlecard [title] [subtitle] [credits]` | Set/clear opening title + end credits |
-| `!subtitles <on\|off>` | `/subtitles state:<on\|off>` | Toggle burned-in subtitles |
-| `!model [name]` | `/model [name]` | Show/switch image model |
-| `!undo` | `/undo` | Roll back the last brief extraction |
-| `!learn <text\|url>` | `/learn content:<text\|url>` | Index a film reference into the knowledge base |
-| `!reset` | `/reset` | Clear the project |
+| Area | Commands |
+|------|----------|
+| Storyboard | `!brief`, `!undo`, `!reset`, `!autodirect` |
+| Render settings | `!tier`, `!keyframe`, `!backend`, `!keyframes-only`, `!titlecard`, `!subtitles`, `!config`, `!install-config`, `!hooks` |
+| Submit | `!render`, `!ship`, `!preflight` |
+| Cast / LoRA | `!cast`, `!bind`, `!train`, `!genrefs`, `!voices`, `!voice` |
+| Uploads | `!importcast`, `!upload`, `!audioupload`, `!addref`, `!addsource`, `!characterref` |
+| Studio | `!saveproject`, `!loadproject`, `!renders`, `!score`, `!api`, `!conformance` |
+| Meta | `!commands` (module-gated live list) |
 
-Slash commands register globally on startup via `Routes.applicationCommands`.
+Every command has a slash equivalent where practical. Slash commands register globally on startup.
 
 ## Conventions
 
-- **No em-dashes (U+2014) or en-dashes (U+2013)** in source, comments, or docs. Use commas,
-  semicolons, parentheses, or `--`.
-- **Handle / username is `skyphusion`** across all services.
-- **Minimal dependencies**: vanilla Node.js + discord.js + the Anthropic SDK only. Justify any new
-  one.
-- **Mirror every `wrangler.toml` binding in the hand-authored `Env`** in each worker's `src/index.ts`.
-- **Secrets never committed**; all state lives in D1 / R2 / Vectorize (cloud-first). `account_id` and
-  tokens come from the environment, never hardcoded.
+- **No em-dashes (U+2014) or en-dashes (U+2013)** in source, comments, or docs.
+- **Handle / username is `skyphusion`** across services.
+- **Minimal dependencies**: vanilla Node.js + discord.js + Anthropic SDK.
+- **Secrets never committed**; config via environment variables.
+- **Trust the studio registry** over hardcoded module names, tiers, or hook lists.
 
 ## Crew + identity
 
-- Crew members work as their own Unix + gh identity. The FIRST command in any op is the member's own
-  login shell: `sudo -u <member> bash -lc '<ops>'` (loads their `$HOME`, their `~/dev/slate` clone,
-  their gh/CF creds).
-- Crew commits land under the member's own `skyphusion-<member>` identity, never Conrad's. (Conrad
-  devs ONLY on his laptop, where his commits author as `Conrad Rockenhaus <conrad@skyphusion.org>`
-  -- his real name kept, the in-house `@skyphusion.org` email; his name is never scrubbed and his
-  history never rewritten. On the crew host the `conrad` user is the god process and commits as
-  `Mackaye <mackaye@skyphusion.org>`.)
-- Cross-project operating context lives in the main auto-memory
-  (`~/.claude/projects/-home-conrad/memory/`); load it before acting.
+Crew members work as their own Unix + gh identity (`sudo -u <member> bash -lc '...'`). Crew commits
+use `skyphusion-<member>` identity, never Conrad's. Conrad devs only on his laptop
+(`Conrad Rockenhaus <conrad@skyphusion.org>`).
 
 ## Commits & versioning
 
-Conventional Commits (`feat(scope):` / `fix(scope):` / `docs:` / `ci:`); the body explains the why.
-SemVer-style `0.MINOR.PATCH` while pre-1.0 (PATCH for fixes / backend tweaks, MINOR for new
-features); a release commit bumps `package.json` `version` and adds a top-of-file `CHANGELOG.md`
-entry.
+Conventional Commits; SemVer `0.MINOR.PATCH` pre-1.0. Release bumps `package.json` + `CHANGELOG.md`.

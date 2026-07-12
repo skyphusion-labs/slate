@@ -69,17 +69,26 @@ export function subtitleEnableField(mod) {
   return bools.find((k) => /enabl|^on$|burn|subtitle|caption/i.test(k)) || bools[0] || 'enabled';
 }
 
-// Build the characterRefs map from synced cast (member with a studio cast id + uploaded portrait
-// key). Slots without a real ref are dropped from use_characters / scene slots so the bundle does
-// not 400 on a slot with no ref. Issue #17's auto-fill (generating missing portraits) runs BEFORE
-// submit in ensureCharacterRefs; by the time we get here the cast that can have refs, does.
-export function buildCharacterRefs(brief) {
+// Build the characterRefs map. Bound studio cast (cast_bindings) uses portrait + ref_keys from the
+// catalog; session-created cast uses castId + portraitKey from Slate's own sync. Slots without a
+// real ref are dropped so the bundle does not 400.
+export function buildCharacterRefs(brief, castCatalog = []) {
+  const catalogById = new Map((castCatalog || []).map((c) => [c.id, c]));
+  const bindings = brief.cast_bindings || {};
   const characterRefs = {};
-  for (const c of brief.cast) {
+
+  for (const c of brief.cast || []) {
+    const boundId = bindings[c.slot];
+    if (boundId) {
+      const member = catalogById.get(boundId);
+      const ref = characterRefFromStudioMember(member, c.name);
+      if (ref) characterRefs[c.slot] = ref;
+      continue;
+    }
     if (c.castId && c.portraitKey) {
       characterRefs[c.slot] = {
-        name:           c.name,
-        portrait:       { key: c.portraitKey },
+        name: c.name,
+        portrait: { key: c.portraitKey },
         trainingImages: [{ key: c.portraitKey }],
       };
     }
@@ -115,6 +124,167 @@ export function matchBackend(names, input) {
 // then a local door (the door is chosen only when it is the sole thing serving, e.g. a pure self-host).
 // Returns { value } with the chosen name, or { error } when nothing serves motion.backend (the caller
 // fails the render loudly; it never falls back to omitting).
+// LoRA status label for roster display.
+export function loraStatusLabel(status) {
+  switch (status) {
+    case 'ready': return 'LoRA ready';
+    case 'training': return 'training...';
+    case 'failed': return 'LoRA failed';
+    default: return 'no LoRA';
+  }
+}
+
+// Resolve a cast member from the studio catalog by public id or case-insensitive name match.
+export function resolveCastMember(catalog, query) {
+  const q = (query ?? '').trim();
+  if (!q || !Array.isArray(catalog)) return null;
+  const byId = catalog.find((c) => c.id === q);
+  if (byId) return byId;
+  const lower = q.toLowerCase();
+  return catalog.find((c) => (c.name ?? '').toLowerCase() === lower)
+    || catalog.find((c) => (c.name ?? '').toLowerCase().includes(lower))
+    || null;
+}
+
+// Build characterRefs entry from a persisted studio cast member (portrait + ref_keys).
+export function characterRefFromStudioMember(member, fallbackName) {
+  if (!member) return null;
+  const trainingImages = [];
+  if (member.portrait_key) trainingImages.push({ key: member.portrait_key });
+  for (const k of member.ref_keys || []) {
+    if (k && !trainingImages.some((t) => t.key === k)) trainingImages.push({ key: k });
+  }
+  if (!trainingImages.length) return null;
+  const ref = {
+    name: member.name || fallbackName,
+    prompt: member.bible || '',
+    trainingImages,
+  };
+  if (member.portrait_key) ref.portrait = { key: member.portrait_key };
+  return ref;
+}
+
+// cast_bindings: { [slot]: castPublicId } -> cast_loras for POST /api/render/film.
+export function buildCastLoras(castBindings) {
+  const out = {};
+  if (!castBindings || typeof castBindings !== 'object') return out;
+  for (const [slot, id] of Object.entries(castBindings)) {
+    if (typeof slot === 'string' && slot && typeof id === 'string' && id) out[slot] = id;
+  }
+  return out;
+}
+
+// Format the studio cast roster for Discord.
+export function formatCastRoster(castList) {
+  if (!Array.isArray(castList) || !castList.length) {
+    return 'No characters in the studio cast library yet. Use `!portrait` to create one, or add them at the control panel.';
+  }
+  const lines = ['**Studio cast library** (`!bind <slot> <name>` to reuse)\n'];
+  for (const c of castList) {
+    const portrait = c.portrait_key ? 'portrait' : 'no portrait';
+    const refs = (c.ref_keys || []).length;
+    const lora = loraStatusLabel(c.lora_status);
+    const voice = c.voice_id ? `voice: ${c.voice_id}` : 'default voice';
+    lines.push(`  \`${c.id.slice(0, 8)}…\` **${c.name}** -- ${lora}, ${portrait}, ${refs} ref(s), ${voice}`);
+  }
+  return lines.join('\n');
+}
+
+// Format preflight issues for Discord.
+export function formatPreflightResult(result) {
+  if (!result) return 'Preflight returned nothing.';
+  const counts = result.counts || {};
+  const header = result.ok
+    ? `Preflight **OK** (${counts.warning || 0} warning(s), ${counts.info || 0} note(s)).`
+    : `Preflight **blocked** (${counts.error || 0} error(s), ${counts.warning || 0} warning(s)).`;
+  const issues = Array.isArray(result.issues) ? result.issues : [];
+  if (!issues.length) return header;
+  const lines = [header, ''];
+  for (const i of issues.slice(0, 12)) {
+    const tag = i.level === 'error' ? '**ERROR**' : i.level === 'warning' ? 'warn' : 'info';
+    lines.push(`  [${tag}] ${i.message}`);
+  }
+  if (issues.length > 12) lines.push(`  ... and ${issues.length - 12} more`);
+  return lines.join('\n');
+}
+
+// Storyboard payload for bundle / preflight (mirrors bot submit shape).
+export function buildStoryboardPayload(brief, characterRefs = {}) {
+  const refSlots = new Set(Object.keys(characterRefs));
+  const sceneSlots = (slots) => (slots ?? []).filter((slot) => refSlots.has(slot));
+  return {
+    title: brief.title ?? 'Untitled',
+    full_prompt: brief.full_prompt ?? undefined,
+    style_prefix: brief.style_prefix ? brief.style_prefix.slice(0, 256) : undefined,
+    style_category: brief.style_category ?? 'None',
+    duration_seconds: brief.duration_seconds ?? undefined,
+    clip_seconds: brief.clip_seconds ?? undefined,
+    use_characters: [...new Set(brief.scenes.flatMap((s) => sceneSlots(s.character_slots)))],
+    scenes: (brief.scenes || []).map((s) => ({
+      id: s.id,
+      prompt: s.prompt ?? '',
+      act: s.act ?? undefined,
+      character_slots: sceneSlots(s.character_slots),
+      target_seconds: s.target_seconds ?? undefined,
+      dialogue: s.dialogue ?? undefined,
+    })),
+  };
+}
+
+// Group module_overrides.config by hook for /api/render/film body fields.
+export function mapModuleOverridesToFilmConfigs(registry, rs, qualityTier) {
+  const mods = Array.isArray(registry?.modules) ? registry.modules : [];
+  const hooks = registry?.hooks || {};
+  const cfg = rs?.module_overrides?.config || {};
+  const byHook = (hook) => (hooks[hook] || [])
+    .map((name) => mods.find((m) => m.name === name))
+    .filter(Boolean);
+
+  const pickOneConfig = (hook, choice) => {
+    const serving = byHook(hook);
+    const mod = (choice && serving.find((m) => m.name === choice)) || serving[0];
+    if (!mod) return {};
+    const c = { ...(cfg[mod.name] || {}) };
+    if (hook === 'keyframe') c.quality_tier = qualityTier;
+    if (hook === 'motion.backend' && mod.config_schema?.quality) c.quality = qualityTier;
+    return { mod, config: c };
+  };
+
+  const chainConfig = (hook) => {
+    const out = {};
+    for (const mod of byHook(hook)) {
+      const c = cfg[mod.name];
+      if (c && typeof c === 'object' && Object.keys(c).length) out[mod.name] = { ...c };
+    }
+    return out;
+  };
+
+  const kf = pickOneConfig('keyframe', rs?.keyframe_backend);
+  const motionChoice = rs?.motion_backend || rs?.module_overrides?.motion_backend;
+  const motion = pickOneConfig('motion.backend', motionChoice);
+
+  return {
+    keyframe_backend: kf.mod?.name,
+    keyframe_config: kf.mod ? kf.config : { quality_tier: qualityTier },
+    motion_backend: motion.mod?.name,
+    motion_config: motion.mod ? motion.config : {},
+    finish_config: chainConfig('finish'),
+    speech_config: chainConfig('speech'),
+    film_finish_config: chainConfig('film.finish'),
+    master_config: chainConfig('master'),
+  };
+}
+
+// Merge film_finish subtitle toggle into mapped configs (registry-projected enable field).
+export function applySubtitleToFilmFinish(filmFinishConfig, subMod, enabled) {
+  if (!enabled || !subMod) return filmFinishConfig;
+  const field = subtitleEnableField(subMod);
+  return {
+    ...filmFinishConfig,
+    [subMod.name]: { ...(filmFinishConfig[subMod.name] || {}), [field]: true },
+  };
+}
+
 export function pickAutoMotionBackend(registry) {
   const serving = registry?.hooks?.['motion.backend'];
   const names = Array.isArray(serving) ? serving.filter(Boolean) : [];

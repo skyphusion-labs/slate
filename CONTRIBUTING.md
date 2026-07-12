@@ -20,7 +20,22 @@ cp stacks/compose.prod.yml .          # reference for required env vars
 node bot.mjs
 ```
 
-There is no unit test suite for the bot (too tightly coupled to live Discord + external APIs). Verify changes by running against a test channel and checking behavior manually.
+There is no integration test suite for the full Discord bot (too tightly coupled to live Discord
+and external APIs). Automated coverage:
+
+```bash
+npm test             # lib.mjs + registry.mjs + contract conformance (69 routes)
+npm run lint         # node --check bot.mjs
+npm run smoke:studio # offline CONTRACT check + live studio probes (needs slate.env)
+```
+
+`npm run smoke:studio -- --offline-only` runs the conformance gate without network.
+`npm run smoke:studio -- --mutations` also probes safe mutation routes (still skips GPU spend).
+
+If you add or change a Vivijure studio API surface, update `contract.mjs` first; `contract.test.ts`
+is the zero-drift gate. See [docs/CONTRACT-conformance.md](docs/CONTRACT-conformance.md).
+
+Verify bot behavior manually against a test channel after changes to `bot.mjs`.
 
 ### slate-search Worker
 
