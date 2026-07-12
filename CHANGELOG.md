@@ -5,6 +5,20 @@ for new features). Newest first.
 
 ## Unreleased
 
+## v0.4.2 (2026-07-12)
+
+- **fix(brief): the assistant now BUILDS the storyboard from a plain-English idea (#84).** `extractBrief`
+  only recorded "explicitly discussed" fields, so a narrated story populated `full_prompt` but produced
+  ZERO scenes -- and a film cannot render without scenes. A real user who narrated their film in plain
+  English got nothing to render. The extract prompt now DECOMPOSES a narrated story into distinct visual
+  shots (one scene per beat -- a change of action, location, or subject), each with a concrete visual
+  prompt + character_slots. Proven on the real "Happy Chase" input: 0 scenes -> 4 (chase, discovery,
+  cat, happy ending).
+- **feat(chat): collaborator behaviour.** SYSTEM_PROMPT now nudges the brain to react like a creative
+  partner -- propose the shot-by-shot breakdown in its own words and recognize a named studio-cast
+  character warmly ("Wren's already in your cast, I'll use her") -- so the flow reads as building the
+  film together, not operating a tool. Pairs with v0.4.1 cast-awareness.
+
 ## v0.4.1 (2026-07-12)
 
 - **fix(chat): the assistant brain can now see the studio cast (#84).** `askLLM` injected only the
