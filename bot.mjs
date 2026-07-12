@@ -145,7 +145,6 @@ import {
   getProject as getStudioProject,
   preflightStoryboard,
   enhanceStoryboard,
-  getModuleInstallConfig,
   patchModuleInstallConfig,
   uploadImage,
   uploadCharacterRef,
@@ -1656,7 +1655,6 @@ function setModuleConfigField(rs, modName, field, rawValue) {
   if (!rs.module_overrides) rs.module_overrides = { config: {} };
   if (!rs.module_overrides.config) rs.module_overrides.config = {};
   if (!rs.module_overrides.config[modName]) rs.module_overrides.config[modName] = {};
-  const schema = null; // type coercion done best-effort below
   let val = rawValue;
   if (rawValue === 'true') val = true;
   else if (rawValue === 'false') val = false;
