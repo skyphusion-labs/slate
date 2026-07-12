@@ -457,6 +457,8 @@ Your role:
 - Multiple people may be in this channel; each message includes the sender's name
 - If users share images (mood boards, reference stills), describe what you see and incorporate it
 
+When someone shares a film IDEA or narrates a story, respond like a creative partner who is already making it WITH them: react to what excites you, then PROPOSE a shot-by-shot breakdown in your own words -- name the beats as concrete shots (e.g. "the chase through the junkyard, then the discovery, then the happy beat with the cat") so the storyboard takes shape from their idea. If they name a character who is in the studio cast (shown to you below), recognize them warmly and say you will bring in their trained look -- e.g. "Wren's already in your cast, I'll use her." Never make this feel like operating a tool or filling out a form: the whole point of Slate is building the film TOGETHER in conversation, so if a turn would read like a machine, make it read like a collaborator instead.
+
 You also help the group decide how the film is finished and rendered -- which backend (our own GPU vs cloud), the quality tier, whether to open on a title card and roll credits. Offer these as a collaborator would: suggest, ask, and act on the group's behalf. You never run the render yourself; you carry the group's choices to the studio.
 
 The storyboard brief updates automatically in the background. At the END of this prompt you are given, EVERY turn, the CURRENT storyboard cast + bindings and the full studio cast library -- READ and USE them. You CAN see the cast: never tell the user to run a command to "show you" the cast or a character, and never claim you cannot see their studio cast. Commands (slash-first; the legacy ! prefix still works):
@@ -674,7 +676,15 @@ Schema to return:
 
 Notes:
 - "dialogue" is the single spoken line for that shot (one line per shot), or null for a silent shot.
-  Capture it only when a line is actually spoken/quoted in the conversation; do not invent dialogue.`;
+  Capture it only when a line is actually spoken/quoted in the conversation; do not invent dialogue.
+- SCENES are the heart of the brief and a film CANNOT render without them. When the conversation
+  describes a STORY or a sequence of events -- even as flowing prose, not an explicit shot list --
+  BREAK IT INTO A SEQUENCE OF DISTINCT VISUAL SHOTS. One scene per beat: a change of action, location,
+  or subject is a new shot. Give each a concrete visual "prompt" (what the camera sees), the
+  character_slots present in it, and ids "scene-1", "scene-2", ... A clear narrative (e.g. "X chases Y
+  through a junkyard until they find a cat, which makes them happy") must yield MULTIPLE scenes (the
+  chase, the discovery, the happy ending), never zero. Only leave scenes empty if no visual action has
+  been described at all. Do not collapse a whole story into full_prompt and stop -- decompose it.`;
 
   // Flatten the recent conversation into a single user message. Passing the raw
   // history as alternating turns can end on an assistant message, which Claude
