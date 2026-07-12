@@ -329,3 +329,42 @@ export function pickAutoBind(catalog, name) {
   if (matches.length > 1) return { status: "ambiguous", matches };
   return { status: "bound", member: matches[0] };
 }
+
+// Build the live-context block injected into the assistant brain every turn (#84 chat fix / #90
+// down-payment). The brain otherwise sees only the system prompt + chat history, so it is BLIND to the
+// studio cast and the current bindings and confabulates ("I can't see your cast"). This hands it (a)
+// the studio cast library (reusable trained characters, name + LoRA readiness + voice) and (b) the
+// current storyboard's cast slots and which are bound, so it can reason about reuse instead of telling
+// the user to run a command it never sees the output of. Returns '' when there is nothing to add.
+export function buildCastContextBlock(brief, castCatalog = []) {
+  const catalog = Array.isArray(castCatalog) ? castCatalog : [];
+  const slots = (brief && Array.isArray(brief.cast)) ? brief.cast : [];
+  const bindings = (brief && brief.cast_bindings) || {};
+  if (!catalog.length && !slots.length) return '';
+
+  const lines = ['--- LIVE STUDIO CONTEXT (you can see this every turn; NEVER tell the user to run a command to "show you" the cast -- you already have it) ---'];
+
+  if (catalog.length) {
+    lines.push('Studio cast library (reusable trained characters -- reuse one and its TRAINED likeness/LoRA is used):');
+    for (const c of catalog) {
+      const voice = c.voice_id ? `, voice ${c.voice_id}` : '';
+      lines.push(`  - ${c.name} -- ${loraStatusLabel(c.lora_status)}${voice}`);
+    }
+  } else {
+    lines.push('Studio cast library: (empty -- no trained characters yet).');
+  }
+
+  if (slots.length) {
+    lines.push('Current storyboard cast slots:');
+    for (const c of slots) {
+      const bound = bindings[c.slot] || c.bound;
+      const tag = bound
+        ? 'BOUND to a studio character (its trained LoRA will be used on render)'
+        : 'inline (auto-binds to a studio character by exact name at render, else rendered from its description)';
+      lines.push(`  - ${c.slot}: ${c.name || '(unnamed)'} -- ${tag}`);
+    }
+  }
+
+  lines.push('To reuse a trained character: /bind <slot> <name> (or just NAME them in the story -- an exact name match auto-binds at render). /unbind <slot> makes a fresh character instead.');
+  return lines.join('\n');
+}
