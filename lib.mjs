@@ -151,8 +151,11 @@ export function characterRefFromStudioMember(member, fallbackName) {
   if (!member) return null;
   const trainingImages = [];
   if (member.portrait_key) trainingImages.push({ key: member.portrait_key });
-  for (const k of member.ref_keys || []) {
-    if (k && !trainingImages.some((t) => t.key === k)) trainingImages.push({ key: k });
+  for (const rk of member.ref_keys || []) {
+    // studio ref_keys are { key, mime } objects (or bare strings); pull out the R2 key string.
+    // Pushing the whole object made trainingImages[i].key = [object Object] -> studio 400 (slate #88).
+    const key = typeof rk === 'string' ? rk : (rk && rk.key);
+    if (key && !trainingImages.some((t) => t.key === key)) trainingImages.push({ key });
   }
   if (!trainingImages.length) return null;
   const ref = {

@@ -288,3 +288,20 @@ describe('pickAutoMotionBackend', () => {
   });
 });
 
+
+describe('characterRefFromStudioMember (slate #88: ref_keys are {key,mime} objects)', () => {
+  it('extracts the R2 key STRING from object ref_keys, never pushes [object Object]', () => {
+    const ref = characterRefFromStudioMember({
+      name: 'Wren', bible: 'a botanist', portrait_key: 'cast/4/portrait.jpg',
+      ref_keys: [{ key: 'cast-gen/4/ref_01.jpg', mime: 'image/jpeg' }, { key: 'cast-gen/4/ref_02.jpg', mime: 'image/jpeg' }],
+    }, 'A');
+    const keys = ref.trainingImages.map((t) => t.key);
+    expect(keys).toEqual(['cast/4/portrait.jpg', 'cast-gen/4/ref_01.jpg', 'cast-gen/4/ref_02.jpg']);
+    expect(keys.every((k) => typeof k === 'string')).toBe(true);
+    expect(JSON.stringify(ref)).not.toContain('[object Object]');
+  });
+  it('still accepts bare-string ref_keys (defensive)', () => {
+    const ref = characterRefFromStudioMember({ name: 'X', ref_keys: ['cast-gen/9/ref_01.jpg'] }, 'A');
+    expect(ref.trainingImages.map((t) => t.key)).toEqual(['cast-gen/9/ref_01.jpg']);
+  });
+});
