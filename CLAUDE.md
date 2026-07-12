@@ -55,6 +55,7 @@ docs/CONTRACT-conformance.md  69-route API matrix (CI-enforced)
 npm run lint         # node --check bot.mjs -- CI gate for the bot
 npm run bot          # node bot.mjs (needs env from slate.env or stacks/.env)
 npm test             # vitest: lib + registry + contract conformance
+npm run smoke:studio # offline gate + optional live studio probes
 npx vitest run       # same as npm test
 cd search-worker && npm run typecheck && npm run deploy
 cd log-worker && npm run typecheck && npm run deploy

@@ -26,7 +26,11 @@ and external APIs). Automated coverage:
 ```bash
 npm test             # lib.mjs + registry.mjs + contract conformance (69 routes)
 npm run lint         # node --check bot.mjs
+npm run smoke:studio # offline CONTRACT check + live studio probes (needs slate.env)
 ```
+
+`npm run smoke:studio -- --offline-only` runs the conformance gate without network.
+`npm run smoke:studio -- --mutations` also probes safe mutation routes (still skips GPU spend).
 
 If you add or change a Vivijure studio API surface, update `contract.mjs` first; `contract.test.ts`
 is the zero-drift gate. See [docs/CONTRACT-conformance.md](docs/CONTRACT-conformance.md).

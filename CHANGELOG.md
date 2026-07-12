@@ -25,6 +25,7 @@ for new features). Newest first.
   (`!plan`, `!refine`, `!scatter`, render-library ops, etc.); [docs/CONTRACT-conformance.md](docs/CONTRACT-conformance.md).
 - **Documentation** -- canonical [docs/commands.md](docs/commands.md), [docs/CONTRACT-conformance.md](docs/CONTRACT-conformance.md);
   README, CLAUDE.md, configuration, constellation, CONTRIBUTING updated for v0.3.0 parity.
+- **Smoke test** -- `npm run smoke:studio` (`scripts/studio-smoke.mjs`): offline CONTRACT gate plus live studio probes.
 
 ## v0.2.1
 

@@ -98,6 +98,7 @@ render row; it is not yet listed in `CONTRACT.md` section 2.1 but is part of the
 
 ```bash
 npm test   # runs contract.test.ts among others
+npm run smoke:studio   # offline conformance + live GET/mutation probes against your studio
 ```
 
 `validateContractConformance()` fails if:

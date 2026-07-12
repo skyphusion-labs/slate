@@ -21,7 +21,8 @@
   "scripts": {
     "bot": "node bot.mjs",
     "lint": "node --check bot.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke:studio": "node scripts/studio-smoke.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110",
