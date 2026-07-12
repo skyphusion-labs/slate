@@ -223,14 +223,27 @@ export function buildStoryboardPayload(brief, characterRefs = {}) {
     duration_seconds: brief.duration_seconds ?? undefined,
     clip_seconds: brief.clip_seconds ?? undefined,
     use_characters: [...new Set(brief.scenes.flatMap((s) => sceneSlots(s.character_slots)))],
-    scenes: (brief.scenes || []).map((s) => ({
-      id: s.id,
-      prompt: s.prompt ?? '',
-      act: s.act ?? undefined,
-      character_slots: sceneSlots(s.character_slots),
-      target_seconds: s.target_seconds ?? undefined,
-      dialogue: s.dialogue ?? undefined,
-    })),
+    scenes: (brief.scenes || []).map((s) => {
+      const slots = sceneSlots(s.character_slots);
+      const scene = {
+        id: s.id,
+        prompt: s.prompt ?? '',
+        act: s.act ?? undefined,
+        character_slots: slots,
+        target_seconds: s.target_seconds ?? undefined,
+      };
+      // The studio storyboard validator (vivijure storyboard-validate.ts) requires scene.dialogue to
+      // be an object { slot, text }, NOT a bare string -- a string 400s the bundle (assembleBundle
+      // re-validates), which silently broke EVERY dialogue-bearing render (slate contract audit). The
+      // brief carries dialogue as a plain spoken line, so attribute it to the shot when there is a
+      // single unambiguous speaking slot (the studio then voices it in that cast member voice; #582
+      // resolves an explicit line voice via the bundle scene dialogue.slot). With no single speaker we
+      // omit it; the line still ships via the top-level dialogue_lines (default voice), never a hard
+      // bundle failure and never a string on the wire.
+      const line = (s.dialogue ?? '').toString().trim();
+      if (line && slots.length === 1) scene.dialogue = { slot: slots[0], text: line };
+      return scene;
+    }),
   };
 }
 
