@@ -3,7 +3,7 @@
 Notable changes per release. SemVer-style (pre-1.0: PATCH for fixes / backend-only tweaks, MINOR
 for new features). Newest first.
 
-## Unreleased
+## v0.4.4 (2026-07-12)
 
 - **fix(contract): stop sending scene.dialogue as a bare string; the studio requires an object.**
   `buildStoryboardPayload` put the brief spoken line on `scenes[].dialogue` as a plain string, but the
