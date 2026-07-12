@@ -49,6 +49,6 @@ Out of scope:
 
 - **Secrets are never committed.** The `.gitignore` excludes `stacks/.env` and all credential files. Cloudflare Worker secrets are set via `wrangler secret put`, not in `wrangler.toml`.
 - **`X-Search-Secret` header** authenticates all requests from the Discord bot to the `slate-search` Worker. This should be a long random string.
-- **Cloudflare Access service token** (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) gates all requests to the Vivijure API and the skyphusion-llm-public image generation API.
+- **Studio API token.** `Authorization: Bearer <STUDIO_API_TOKEN>` authenticates every request Slate makes to the Vivijure Studio API; the Studio uses named bearer-token auth by default (`AUTH_MODE=token`, vivijure #423). If the operator has additionally put Cloudflare Access in front of the Studio, an optional **Access service token** (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) is sent to pass that outer door; it is not needed when the Studio has no Access in front of it (the common case).
 - **D1 session data** is scoped per Discord channel ID. No cross-channel reads occur.
 - **Image attachments** are fetched directly from Discord's CDN over HTTPS, base64-encoded for the current turn, and never persisted to disk or D1.
