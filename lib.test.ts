@@ -12,6 +12,7 @@ import {
   formatPreflightResult,
   matchBackend,
   pickAutoMotionBackend,
+  pickAutoBind,
 } from './lib.mjs';
 
 // Real unit tests over the pure helpers extracted from bot.mjs. No Discord client, no network,
@@ -303,5 +304,30 @@ describe('characterRefFromStudioMember (slate #88: ref_keys are {key,mime} objec
   it('still accepts bare-string ref_keys (defensive)', () => {
     const ref = characterRefFromStudioMember({ name: 'X', ref_keys: ['cast-gen/9/ref_01.jpg'] }, 'A');
     expect(ref.trainingImages.map((t) => t.key)).toEqual(['cast-gen/9/ref_01.jpg']);
+  });
+});
+
+describe("pickAutoBind (#84 auto-reuse of trained studio cast)", () => {
+  const catalog = [
+    { id: "wren-id", name: "Wren", lora_status: "ready" },
+    { id: "riff-a", name: "Riff", lora_status: "ready" },
+    { id: "riff-b", name: "Riff", lora_status: "failed" },
+  ];
+  it("binds on a unique exact case-insensitive name match", () => {
+    const r = pickAutoBind(catalog, "wren");
+    expect(r.status).toBe("bound");
+    expect(r.member.id).toBe("wren-id");
+  });
+  it("is ambiguous when >1 member shares the name -- never auto-picks", () => {
+    const r = pickAutoBind(catalog, "Riff");
+    expect(r.status).toBe("ambiguous");
+    expect(r.matches).toHaveLength(2);
+  });
+  it("returns none when no member has the name", () => {
+    expect(pickAutoBind(catalog, "Nobody").status).toBe("none");
+  });
+  it("skips a generic placeholder slot name", () => {
+    expect(pickAutoBind(catalog, "Character A").status).toBe("skip");
+    expect(pickAutoBind(catalog, "").status).toBe("skip");
   });
 });

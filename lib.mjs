@@ -304,3 +304,28 @@ export function pickAutoMotionBackend(registry) {
   const chosen = firstOfClass('cloud') ?? firstOfClass('byo') ?? firstOfClass('local') ?? names[0];
   return { value: chosen };
 }
+
+// Auto-bind resolver (#84): decide whether an inline cast slot with a given NAME should reuse an
+// existing studio cast member instead of minting a fresh one. The natural Slate flow (describe a
+// character / !portrait) POSTs a NEW cast member every session and never sets cast_bindings, so a
+// user who already trained "Wren" gets a generic, LoRA-less character unless they know the hidden
+// /bind command. This makes reuse the DEFAULT: on an EXACT (case-insensitive) name match to a
+// single studio member, bind it (so cast_loras carries the trained LoRA). Guardrails: a generic
+// placeholder name ("Character A") never matches; MULTIPLE same-name rows (e.g. two "Riff") are
+// AMBIGUOUS -- we never silently pick, we surface the roster so the user binds by id. Returns one of:
+//   { status: skip }                 -- no real name to match on
+//   { status: none }                 -- a real name, but no studio member has it
+//   { status: bound, member }        -- exactly one match; caller binds + hydrates from it
+//   { status: ambiguous, matches }   -- >1 match; caller surfaces, never auto-picks
+const GENERIC_SLOT_NAME = /^character\s+[a-d]$/i;
+export function pickAutoBind(catalog, name) {
+  const n = (name ?? "").trim();
+  if (!n || GENERIC_SLOT_NAME.test(n)) return { status: "skip" };
+  const lower = n.toLowerCase();
+  const matches = (Array.isArray(catalog) ? catalog : []).filter(
+    (c) => (c.name ?? "").trim().toLowerCase() === lower,
+  );
+  if (!matches.length) return { status: "none" };
+  if (matches.length > 1) return { status: "ambiguous", matches };
+  return { status: "bound", member: matches[0] };
+}
