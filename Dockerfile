@@ -10,7 +10,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 # Application source (bot.mjs imports ./lib.mjs; assets/ is docs-only, not runtime).
-COPY bot.mjs lib.mjs ./
+COPY *.mjs ./
 
 # Logs go to stdout in container mode.
 ENV DISCORD_LOG=/dev/stdout
