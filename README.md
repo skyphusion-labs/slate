@@ -4,7 +4,8 @@
 chat, then sends it to the studio to be made into video.** You talk about an
 idea in a Discord channel; Slate joins in as a co-writer, quietly keeps a
 storyboard in the background, draws your characters, and when you are ready ships
-the whole thing to a Vivijure Studio to render.
+the whole thing to a Vivijure Studio (Cloudflare via vivijure-cf, or a home PC / any cloud
+server via vivijure-local) to render.
 
 > Slate started as a simple Discord-to-Ollama relay and was redesigned and
 > substantially extended by [Claude Sonnet 4.6](https://anthropic.com) (operating
@@ -30,7 +31,7 @@ flowchart TD
     slate[slate<br/>Discord screenwriter bot]
 
     subgraph core[The control plane]
-        studio[vivijure Studio<br/>projects, storyboard, cast,<br/>render orchestration + module registry]
+        studio[Vivijure Studio<br/>vivijure-cf or vivijure-local<br/>on vivijure-core]
     end
 
     subgraph modules[Modules: one job each, opt-in]
