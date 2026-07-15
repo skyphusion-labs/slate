@@ -8,7 +8,11 @@ shows this same map, so you always know where you are.
 
 The **Studio** is the center. It is the control plane: it holds your projects, your storyboards,
 your cast, and it tells everything else what to do. You talk to the Studio; the Studio talks to
-everything else.
+everything else. Run that control plane on Cloudflare with
+[vivijure-cf](https://github.com/skyphusion-labs/vivijure-cf), or on a home computer / any cloud
+server with [vivijure-local](https://github.com/skyphusion-labs/vivijure-local). Both hosts share
+[vivijure-core](https://github.com/skyphusion-labs/vivijure-core); agents can drive either host with
+[vivijure-mcp](https://github.com/skyphusion-labs/vivijure-mcp).
 
 ```mermaid
 flowchart TD
@@ -20,7 +24,7 @@ flowchart TD
     slate[slate<br/>Discord screenwriter bot]
 
     subgraph core[The control plane]
-        studio[vivijure Studio<br/>projects, storyboard, cast,<br/>render orchestration + module registry]
+        studio[Vivijure Studio<br/>vivijure-cf or vivijure-local<br/>on vivijure-core]
     end
 
     subgraph modules[Modules: one job each, opt-in]
@@ -62,8 +66,9 @@ flowchart TD
   **Studio web page**. Both lead to the same place: the Studio. Slate mirrors the web control
   panel: render settings, cast workflows, module hooks, and all studio API routes are available
   from Discord (`!commands` shows what your installed modules support).
-- **The Studio** (this control plane) owns your work and decides what runs. It does not render
-  video itself. It hands the heavy work to a **module**.
+- **The Studio** owns your work and decides what runs. Host it with **vivijure-cf** (Cloudflare
+  Workers) or **vivijure-local** (home PC or any cloud server); both sit on **vivijure-core**. It
+  does not render video itself. It hands the heavy work to a **module**.
 - **A module** is a small, opt-in worker that does one job: make a video clip, upscale it, add a
   music bed, sync lips to speech. You turn on only the modules you want. The Studio keeps a
   **registry** of the modules you have, and the web page builds itself from that registry, so a
