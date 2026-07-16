@@ -78,11 +78,21 @@ Bot runs as Docker on the stack host (tag-driven GHCR image). Workers deploy fro
 
 - **Claude Sonnet via CF AI Gateway** (native Anthropic SDK). Falls back to ollama when
   `CF_AIG_TOKEN` is unset.
-- **Tool-use loop** (5 rounds max): web_search, research, fetch_page, search_knowledge via
-  slate-search Worker.
+- **Tool-use loop** (5 rounds max): web_search, research, fetch_page, search_knowledge,
+  search_memory via slate-search Worker.
 - **Vision**: image attachments as base64 to Claude (ollama path strips to text).
 - **D1 session state**: brief, history, briefHistory, render_settings, cast_bindings,
-  studio_project_id, render_jobs.
+  studio_project_id, render_jobs, traffic_ledger.
+- **Traffic ledger + session-memory RAG (slate#90):** every studio.mjs call flows through
+  `studioRequest`, which fires an observer (`setStudioRequestObserver`, wired in bot.mjs) that logs
+  the full request/response to D1 `traffic_ledger` and, for mutating calls, embeds a summary into
+  the `slate-memory` Vectorize index (search-worker `/memory/index`). Chat turns and brief snapshots
+  are embedded the same way, on save and on `extractBrief`. `channelContext` (an `AsyncLocalStorage`
+  entered at the top of the `MessageCreate` / `InteractionCreate` handlers) attributes every write to
+  the right Discord channel without threading a channelId through every studio.mjs call site.
+  Retrieval: `search_memory` tool (automatic, mid-conversation) and `!memory` / `/memory` (manual).
+  `slate-memory` is a separate Vectorize index from `slate-knowledge` (the manual `!learn` corpus) so
+  per-channel session context never leaks across channels or mixes into the shared knowledge base.
 - **Registry projection**: `registry.mjs` mirrors planner-registry.js + planner-render-config.js.
   Hook catalog, pick_one choosers, module config, and command gates all from `GET /api/modules`.
 - **Studio client**: `studio.mjs` implements every route in the conformance matrix (`contract.mjs`).

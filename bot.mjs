@@ -33,7 +33,8 @@
 //                               When set the main conversation uses Claude via CF AI Gateway.
 //                               Falls back to ollama when unset.
 //   CF_GATEWAY_ENDPOINT         CF AI Gateway compat URL (used to derive the Anthropic base URL).
-//   SEARCH_WORKER_URL           slate-search Worker base URL (enables web search + knowledge base)
+//   SEARCH_WORKER_URL           slate-search Worker base URL (enables web search + knowledge base +
+//                               the auto-ingested session-memory RAG index, slate#90)
 //   SEARCH_SECRET               shared secret for X-Search-Secret header
 //
 // ! commands:
@@ -56,6 +57,7 @@
 //   !ship                  confirm + submit the render Slate just huddled on
 //   !undo                  roll back the last brief extraction
 //   !learn <text or URL>   index a film reference into the knowledge base
+//   !memory <query>        search Slate's own session memory (chat/brief/traffic) for this channel
 //   !cast                  list the studio cast library (trained LoRAs, voices)
 //   !bind <slot> <name>    bind a storyboard slot to an existing studio character
 //   !unbind <slot>         clear a cast binding (back to inline character)
@@ -96,6 +98,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { AttachmentBuilder, Client, GatewayIntentBits, Partials, Events, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import { appendFileSync } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   smartTrimPrompt,
   buildFilmTitles,
@@ -130,6 +133,7 @@ import {
   resolvePickOne,
 } from './registry.mjs';
 import { executeStudioAction } from './studio-api.mjs';
+import { setStudioRequestObserver } from './studio.mjs';
 import { STUDIO_COMMAND_ALIASES, aliasArgs, formatConformanceReport } from './contract.mjs';
 import {
   listCast,
@@ -378,6 +382,21 @@ async function initD1() {
       submitted_at TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending'
     )`);
+    // slate#90: the request/response ledger of every Slate <-> studio API call. channel_id is
+    // nullable -- background/startup calls (e.g. the registry fetch) have no channel in scope.
+    await d1Query(`CREATE TABLE IF NOT EXISTS traffic_ledger (
+      id TEXT PRIMARY KEY,
+      channel_id TEXT,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      status INTEGER,
+      ok INTEGER NOT NULL,
+      request_summary TEXT,
+      response_summary TEXT,
+      latency_ms INTEGER,
+      created_at TEXT NOT NULL
+    )`);
+    await d1Query('CREATE INDEX IF NOT EXISTS idx_traffic_ledger_channel ON traffic_ledger(channel_id, created_at)');
     log('D1 tables ready');
   } catch (e) {
     log(`WARN: D1 init failed: ${e.message}`);
@@ -434,6 +453,106 @@ function withChannelLock(channelId, fn) {
   const run = prev.then(fn, fn);                             // run fn regardless of the prior outcome
   channelLocks.set(channelId, run.then(() => {}, () => {})); // keep the chain; swallow errors on the tail
   return run;
+}
+
+// ---------------------------------------------------------------------------
+// Traffic ledger + session memory (slate#90)
+//
+// D1 holds the authoritative, complete request/response ledger of every Slate <-> studio call.
+// Vectorize (via slate-search's /memory/* routes) holds a curated, searchable subset -- chat turns,
+// brief snapshots, and mutating studio calls -- embedded for RAG so Slate can recall prior context
+// in the bot path instead of re-asking a group for something it already saw. Both are best-effort:
+// a ledger/memory write failure never blocks or fails the user-facing action that triggered it.
+//
+// channelContext carries the channel id across the async chain started by each Discord event
+// (MessageCreate / InteractionCreate) so the studio-request observer below -- and any tool call deep
+// in the Claude tool-use loop -- can attribute traffic/memory to the right channel without threading
+// a channelId parameter through every studio.mjs call site.
+// ---------------------------------------------------------------------------
+
+const channelContext = new AsyncLocalStorage();
+
+function currentChannelId() {
+  return channelContext.getStore() ?? null;
+}
+
+// Best-effort JSON/text summarizer for ledger + memory bodies. Binary bodies (image/audio uploads)
+// are never stringified -- just their size -- so the ledger stays readable and small.
+function summarizeForLedger(value, limit = 2000) {
+  if (value === undefined || value === null) return null;
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || Buffer.isBuffer(value)) {
+    return `<binary ${value.byteLength ?? value.length ?? 0} bytes>`;
+  }
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  if (!text) return null;
+  return text.length > limit ? text.slice(0, limit) + '…' : text;
+}
+
+async function logTraffic({ channelId, method, path, status, ok, requestSummary, responseSummary, latencyMs }) {
+  if (!CFG.d1Token) return;
+  try {
+    await d1Query(
+      `INSERT INTO traffic_ledger
+         (id, channel_id, method, path, status, ok, request_summary, response_summary, latency_ms, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        crypto.randomUUID(), channelId ?? null, method, path,
+        status ?? null, ok ? 1 : 0, requestSummary ?? null, responseSummary ?? null,
+        latencyMs ?? null, new Date().toISOString(),
+      ],
+    );
+  } catch (e) {
+    log(`ERROR logging traffic ${method} ${path}: ${e.message}`);
+  }
+}
+
+// Auto-ingest into the session-memory Vectorize index (slate-search /memory/index). Fire-and-forget
+// from every call site -- never awaited inline with the user-facing action, never throws.
+async function indexMemory(channelId, kind, content, meta = {}) {
+  if (!CFG.searchUrl || !CFG.searchSecret || !content) return;
+  try {
+    await fetch(`${CFG.searchUrl}/memory/index`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.searchSecret },
+      body:    JSON.stringify({ content: content.slice(0, 4000), kind, channelId: channelId ?? '', meta }),
+    });
+  } catch (e) {
+    log(`ERROR indexing memory (${kind}) for ${channelId}: ${e.message}`);
+  }
+}
+
+// Polling GETs (job/render/refs-job status checks) fire every few seconds during a render and are
+// pure repetition -- logging every poll to the ledger would drown the signal in noise, and embedding
+// them into memory would waste Workers AI calls on content with no retrieval value. Everything else
+// (every mutating call, every one-shot GET) is logged in full.
+const POLL_PATH_RE = /\/(job|refs-job)\/|\/render\/[^/]+$|\/render\/film\/[^/]+$|\/render\/clips\/[^/]+$/;
+
+function isPollPath(method, path) {
+  return method === 'GET' && POLL_PATH_RE.test(path);
+}
+
+// Registered once at startup (see bottom of file). studio.mjs calls this for every studio HTTP
+// request/response/error; it never has channel context of its own, hence channelContext above.
+function onStudioRequest(evt) {
+  const channelId = currentChannelId();
+  if (isPollPath(evt.method, evt.path)) return;
+
+  const ok     = !evt.error && evt.result?.ok !== false;
+  const status = evt.result?.status ?? null;
+  const requestSummary  = summarizeForLedger(evt.body);
+  const responseSummary = evt.error
+    ? `ERROR: ${evt.error.message}`
+    : summarizeForLedger(evt.result?.data ?? evt.result?.raw);
+
+  logTraffic({ channelId, method: evt.method, path: evt.path, status, ok, requestSummary, responseSummary, latencyMs: evt.latencyMs })
+    .catch(() => {});
+
+  // Only mutating calls go into RAG memory -- GETs are mostly re-derivable studio state, and the
+  // interesting ones (cast, projects, renders) are already covered by the brief/chat snapshots below.
+  if (evt.method !== 'GET') {
+    const text = `${evt.method} ${evt.path} -> ${status ?? 'error'}\nRequest: ${requestSummary ?? '(none)'}\nResponse: ${(responseSummary ?? '').slice(0, 1200)}`;
+    indexMemory(channelId, 'traffic', text, { method: evt.method, path: evt.path }).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +657,11 @@ const SEARCH_TOOLS = [
     description:  'Search the Slate knowledge base for indexed film references, cinematography notes, director styles, genre conventions, or anything previously added with !learn.',
     input_schema: { type: 'object', properties: { query: { type: 'string', description: 'What to search for' } }, required: ['query'] },
   },
+  {
+    name:         'search_memory',
+    description:  'Search Slate\'s own memory of THIS channel: past conversation turns, storyboard-brief snapshots, and studio API activity (renders, cast changes, uploads). Use this instead of asking the group to repeat something they may have already told you or that already happened in the studio.',
+    input_schema: { type: 'object', properties: { query: { type: 'string', description: 'What to recall' } }, required: ['query'] },
+  },
 ];
 
 async function executeTool(name, input) {
@@ -563,6 +687,12 @@ async function executeTool(name, input) {
     log(`[search] knowledge: ${input.query}`);
     const res = await fetch(`${CFG.searchUrl}/knowledge/search`, { method: 'POST', headers, body: JSON.stringify({ query: input.query }) });
     return res.ok ? res.json() : `Knowledge search error: ${res.status}`;
+  }
+  if (name === 'search_memory') {
+    const channelId = currentChannelId();
+    log(`[search] memory: ${input.query} (channel ${channelId})`);
+    const res = await fetch(`${CFG.searchUrl}/memory/search`, { method: 'POST', headers, body: JSON.stringify({ query: input.query, channelId }) });
+    return res.ok ? res.json() : `Memory search error: ${res.status}`;
   }
   return 'Unknown tool';
 }
@@ -740,6 +870,12 @@ Notes:
     await saveProject(channelId);
   });
   log(`[${channelId}] brief updated`);
+
+  // slate#90: index the fresh brief (cast, scenes, render settings) into session memory so a later
+  // turn -- or a whole new conversation revisiting the same channel -- can recall it via RAG instead
+  // of Slate re-deriving or re-asking for it. Fire-and-forget; never blocks the extraction path.
+  const project2 = projects.get(channelId);
+  if (project2) indexMemory(channelId, 'brief', formatBrief(project2.brief)).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -1691,6 +1827,33 @@ async function indexKnowledge(content, title = '', author = '') {
 }
 
 // ---------------------------------------------------------------------------
+// Session memory search (slate#90 -- manual peek at !memory / /memory, same store
+// automatically consulted by the search_memory tool during conversation)
+// ---------------------------------------------------------------------------
+
+async function queryMemory(channelId, query) {
+  if (!CFG.searchUrl || !CFG.searchSecret) return { ok: false, error: 'Search worker not configured' };
+  const res = await fetch(`${CFG.searchUrl}/memory/search`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.searchSecret },
+    body:    JSON.stringify({ query, channelId }),
+  });
+  if (!res.ok) return { ok: false, error: `memory search failed ${res.status}` };
+  const data = await res.json();
+  return { ok: true, results: data.results ?? [] };
+}
+
+function formatMemoryResults(results) {
+  if (!results.length) return 'Nothing in memory yet for this channel -- Slate builds this up as you talk, plan, and render.';
+  const lines = ['**From Slate\'s memory of this channel:**'];
+  for (const r of results) {
+    const when = r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 16).replace('T', ' ') : '';
+    lines.push(`\n**[${r.kind}]${when ? ` ${when}` : ''}** (score ${r.score?.toFixed(2) ?? '?'})\n${r.content.slice(0, 500)}`);
+  }
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // Message chunking (Discord 2000 char limit)
 // ---------------------------------------------------------------------------
 
@@ -1855,6 +2018,10 @@ const SLASH_COMMANDS = [
     .setDescription('Index a film reference into the knowledge base')
     .addStringOption(o => o.setName('content').setDescription('Text or URL to index').setRequired(true)),
   new SlashCommandBuilder()
+    .setName('memory')
+    .setDescription('Search what Slate has retained about this channel (chat, brief, studio traffic)')
+    .addStringOption(o => o.setName('query').setDescription('What to recall').setRequired(true)),
+  new SlashCommandBuilder()
     .setName('reset')
     .setDescription('Clear the project and start fresh'),
   new SlashCommandBuilder()
@@ -2002,6 +2169,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
   const channelId  = interaction.channelId;
   const authorName = interaction.member?.displayName ?? interaction.user.username;
   log(`[slash:${interaction.commandName}] ${authorName} in ${channelId}`);
+
+  // slate#90: every studio call this handler triggers (directly or via the Claude tool loop)
+  // attributes to this channel in the traffic ledger + session memory without threading channelId
+  // through every call site. enterWith (not run()) so we don't have to re-indent the whole switch.
+  channelContext.enterWith(channelId);
 
   try {
     switch (interaction.commandName) {
@@ -2288,6 +2460,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       }
 
+      case 'memory': {
+        const query = interaction.options.getString('query');
+        await interaction.deferReply();
+        const result = await queryMemory(channelId, query);
+        if (!result.ok) { await interaction.editReply(`Memory search failed: ${result.error}`); break; }
+        await interaction.editReply(formatMemoryResults(result.results).slice(0, 2000));
+        break;
+      }
+
       case 'reset': {
         projects.set(channelId, { brief: emptyBrief(), history: [], briefHistory: [], imageModel: DEFAULT_IMAGE_MODEL });
         await saveProject(channelId);
@@ -2555,6 +2736,8 @@ client.on(Events.MessageCreate, async (message) => {
   const channelId    = message.channelId;
   const authorName   = message.member?.displayName ?? message.author.username;
   const channelLabel = isDM ? 'DM' : `${message.guild.name}/#${message.channel.name ?? channelId}`;
+
+  channelContext.enterWith(channelId); // slate#90: see the InteractionCreate handler for why
 
   log(`[${channelLabel}] ${authorName}: ${rawText.slice(0, 120)}${hasImages ? ` [+${message.attachments.size} image(s)]` : ''}`);
 
@@ -3309,6 +3492,16 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
+  if (rawText.startsWith('!memory')) {
+    const query = rawText.slice('!memory'.length).trim();
+    if (!query) { await message.reply('Usage: `!memory <query>` -- search what Slate has retained about this channel.').catch(() => {}); return; }
+
+    const result = await queryMemory(channelId, query);
+    if (!result.ok) { await message.reply(`Memory search failed: ${result.error}`).catch(() => {}); return; }
+    for (const chunk of splitMessage(formatMemoryResults(result.results))) await message.reply(chunk).catch(() => {});
+    return;
+  }
+
   // A "ship it" while a huddle is armed fires the submit. Handle every armed case explicitly so a
   // confirmation never silently vanishes: a fresh clean phrase ships; an expired one says so; a
   // near-miss affirmation ("let's ship it", "yes") gets nudged toward the exact word while the
@@ -3380,6 +3573,11 @@ client.on(Events.MessageCreate, async (message) => {
       await saveProject(channelId);
     });
 
+    // slate#90: index this exchange into session memory for RAG recall. Fire-and-forget, same as
+    // the traffic-observer and brief-snapshot ingests -- never adds latency to the user-facing reply.
+    const memoryText = imageBlocks.length > 0 ? `[${imageBlocks.length} image(s)]\n${userLabel}` : userLabel;
+    indexMemory(channelId, 'chat', `${memoryText}\nSlate: ${reply}`).catch(() => {});
+
     // Background brief extraction (its own lock guards the commit).
     extractBrief(channelId).catch(e => log(`extractBrief error: ${e.message}`));
 
@@ -3396,6 +3594,8 @@ client.on(Events.MessageCreate, async (message) => {
 // ---------------------------------------------------------------------------
 // Startup Execution Link
 // ---------------------------------------------------------------------------
+
+setStudioRequestObserver(onStudioRequest); // slate#90: ledger + memory ingest for every studio call
 
 await initD1().catch(err => log(`D1 Table Setup Notice: ${err.message}`));
 

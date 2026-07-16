@@ -24,6 +24,18 @@ async function readResponse(res) {
   return { ok: res.ok, status: res.status, data: text, raw: text };
 }
 
+// Observer hook (slate#90): every studio call flows through this one function, so it is the single
+// choke point for a full traffic ledger without threading channel/session context through 100+ call
+// sites. bot.mjs registers an observer that logs each request/response to D1 and, for mutating calls,
+// indexes a summary into Vectorize for RAG. Kept optional and side-effect-free by default so studio.mjs
+// stays a plain, bot-agnostic HTTP client (unit-testable, no D1/Vectorize awareness).
+let requestObserver = null;
+export function setStudioRequestObserver(fn) { requestObserver = fn; }
+function notifyObserver(event) {
+  if (!requestObserver) return;
+  try { requestObserver(event); } catch { /* observer failures never affect the studio call */ }
+}
+
 export async function studioRequest(baseUrl, headers, method, path, opts = {}) {
   const init = { method, headers: { ...headers } };
   if (opts.body !== undefined && !(opts.body instanceof ArrayBuffer) && !ArrayBuffer.isView(opts.body)) {
@@ -37,8 +49,17 @@ export async function studioRequest(baseUrl, headers, method, path, opts = {}) {
     init.body = opts.body;
   }
   if (opts.contentType) init.headers['Content-Type'] = opts.contentType;
-  const res = await fetch(buildUrl(baseUrl, path, opts.query), init);
-  return readResponse(res);
+
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(buildUrl(baseUrl, path, opts.query), init);
+    const result = await readResponse(res);
+    notifyObserver({ method, path, query: opts.query, body: opts.body, result, latencyMs: Date.now() - startedAt });
+    return result;
+  } catch (e) {
+    notifyObserver({ method, path, query: opts.query, body: opts.body, error: e, latencyMs: Date.now() - startedAt });
+    throw e;
+  }
 }
 
 export async function studioGet(baseUrl, headers, path, query) {

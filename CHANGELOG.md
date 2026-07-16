@@ -3,6 +3,24 @@
 Notable changes per release. SemVer-style (pre-1.0: PATCH for fixes / backend-only tweaks, MINOR
 for new features). Newest first.
 
+## v0.5.0 (2026-07-16)
+
+- **feat(memory): studio traffic ledger + session-memory RAG (#90).** Half of this epic (D1 session
+  state -- brief, history, cast bindings) already shipped as infra; this lands the other half. Every
+  `studio.mjs` call now flows through a request observer that (1) writes a complete request/response
+  record to a new D1 `traffic_ledger` table -- method, path, status, truncated bodies, latency,
+  Discord channel -- and (2) for mutating calls, embeds a summary into a new Vectorize index
+  (`slate-memory`, bound in `search-worker`) for RAG. Chat turns and storyboard-brief snapshots are
+  embedded into the same index on save / on `extractBrief`, so Slate accumulates a searchable memory
+  of conversation, cast, and studio activity per channel without any manual step. A new
+  `search_memory` tool lets Slate consult that memory mid-conversation instead of re-asking a group
+  for something it already saw; `!memory <query>` / `/memory` expose the same search directly.
+  `slate-memory` is a separate index from the manual `!learn` knowledge base (`slate-knowledge`) so
+  per-channel session context never leaks across channels or pollutes the shared corpus.
+  `channelContext` (`AsyncLocalStorage`, entered at the top of the Discord event handlers) attributes
+  every ledger/memory write to the right channel without threading a channelId through the ~100
+  `studio.mjs` call sites in `bot.mjs` / `studio-api.mjs`.
+
 ## v0.4.4 (2026-07-12)
 
 - **fix(contract): stop sending scene.dialogue as a bare string; the studio requires an object.**
