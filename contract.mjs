@@ -272,6 +272,7 @@ export function validateContractConformance(studioExports, studioActions) {
 
   const infra = new Set([
     'studioRequest', 'studioGet', 'studioPost', 'studioPatch', 'studioDelete', 'studioUploadBinary',
+    'setStudioRequestObserver', // slate#90: traffic-ledger/RAG observer hook, not an HTTP route
   ]);
 
   for (const [name, exp] of Object.entries(studioExports)) {

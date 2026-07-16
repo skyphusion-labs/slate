@@ -14,6 +14,15 @@ binding = "AI"
 binding = "KNOWLEDGE"
 index_name = "slate-knowledge"
 
+# slate#90: auto-ingested session memory (chat/brief/traffic), separate from the manual KNOWLEDGE
+# corpus above so per-channel session context never mixes into the shared !learn knowledge base.
+# Create once: `npx wrangler vectorize create slate-memory --dimensions=1024 --metric=cosine`, then
+# `npx wrangler vectorize create-metadata-index slate-memory --property-name=channelId --type=string`
+# (powers the optional channelId filter on /memory/search).
+[[vectorize]]
+binding = "MEMORY"
+index_name = "slate-memory"
+
 # Secrets (set via: wrangler secret put <NAME>)
 #   BRAVE_API_KEY
 #   TAVILY_API_KEY

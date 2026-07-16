@@ -157,6 +157,12 @@ runs, but memory resets on restart.
 Create a database once with `npx wrangler d1 create slate-sessions`; the command
 prints the database id.
 
+**Traffic ledger (slate#90):** the same database also holds `traffic_ledger`, a complete
+request/response record of every call Slate makes to the Vivijure Studio (method, path, status,
+truncated request/response bodies, latency, and the Discord channel it came from). It is created
+automatically alongside `sessions` and `render_jobs` on startup. This is the authoritative,
+un-curated audit trail; the curated, embedded-for-search subset lives in Vectorize (group 8, below).
+
 ### `CF_D1_TOKEN`
 - **What:** a Cloudflare API token with the **D1 Edit** permission.
 - **Why:** it lets Slate read and write its database over Cloudflare's API.
@@ -248,10 +254,12 @@ screen (and in `DISCORD_LOG`) only.
 ## 8. The slate-search Worker (optional add-on)
 
 This is a separate Cloudflare Worker in [search-worker/](../search-worker). It
-gives Slate web search and a knowledge base. Its settings are Worker **secrets**,
-set with `npx wrangler secret put <NAME>` from inside `search-worker/`, not in
-`slate.env`. Its bindings (the AI model, the headless browser, and the Vectorize
-index named `slate-knowledge`) live in `search-worker/wrangler.toml`.
+gives Slate web search, a knowledge base, and (slate#90) its own session-memory
+RAG index. Its settings are Worker **secrets**, set with
+`npx wrangler secret put <NAME>` from inside `search-worker/`, not in
+`slate.env`. Its bindings (the AI model, the headless browser, and two Vectorize
+indexes -- `slate-knowledge` and `slate-memory`) live in
+`search-worker/wrangler.toml`.
 
 ### `BRAVE_API_KEY`
 - **What:** an API key for Brave Search.
@@ -274,6 +282,26 @@ index named `slate-knowledge`) live in `search-worker/wrangler.toml`.
 
 To create the knowledge-base index once, run
 `npx wrangler vectorize create slate-knowledge --dimensions=1024 --metric=cosine`,
+then `npm run deploy` from `search-worker/`.
+
+### Session memory (slate#90)
+
+The `slate-memory` Vectorize index is separate from `slate-knowledge` above: it holds Slate's own
+auto-ingested memory of conversation turns, storyboard-brief snapshots, and studio API traffic per
+Discord channel, not user-submitted `!learn` references. Same secrets, same Worker, no extra config
+on the bot side beyond `SEARCH_WORKER_URL` / `SEARCH_SECRET` (group 6), which now also drive
+`/memory/index` and `/memory/search`. bot.mjs writes to it automatically (chat turns, brief updates,
+and every mutating studio call); `!memory <query>` / `/memory` let a person query it directly, and
+the `search_memory` tool lets Slate consult it mid-conversation instead of re-asking the group.
+
+Create the index and its `channelId` metadata index once (so `/memory/search` can scope results to
+a single channel):
+
+```
+npx wrangler vectorize create slate-memory --dimensions=1024 --metric=cosine
+npx wrangler vectorize create-metadata-index slate-memory --property-name=channelId --type=string
+```
+
 then `npm run deploy` from `search-worker/`.
 
 ---

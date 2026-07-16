@@ -97,8 +97,13 @@ spoken line per shot) used for subtitles and TTS.
 | `!thumbnail <scene-id>` | `/thumbnail` | Generate a scene thumbnail from the scene prompt + style |
 | `!model [alias]` | `/model` | List or switch the active image model (FLUX, SDXL, GPT Image, etc.) |
 | `!learn <text or URL>` | `/learn` | Index a film reference into the Vectorize knowledge base |
+| `!memory <query>` | `/memory` | Search Slate's own session memory (chat, brief, studio traffic) for this channel |
 
 **Vision:** attach up to 3 images (4 MB each) when Claude is active; Slate reads them for the turn.
+
+`!memory` is a manual peek at the same session-memory index the `search_memory` tool consults
+automatically during conversation (slate#90) -- see [configuration.md](configuration.md#4-saved-memory-cloudflare-d1)
+and the "Key architecture" section of [CLAUDE.md](../CLAUDE.md) for what gets ingested and when.
 
 ---
 

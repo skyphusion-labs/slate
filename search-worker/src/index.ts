@@ -6,6 +6,14 @@
 //   POST /fetch   { url }
 //   POST /knowledge/index   { content, title?, author? }
 //   POST /knowledge/search  { query, topK?: number }
+//   POST /memory/index   { content, kind, channelId?, meta? }
+//   POST /memory/search  { query, channelId?, topK?: number }
+//
+// `knowledge/*` is the manual, cross-channel `!learn` corpus (film references a user explicitly
+// submits). `memory/*` (slate#90) is Slate's own auto-ingested session memory -- conversation turns,
+// storyboard-brief snapshots, and studio API traffic -- written by bot.mjs on meaningful events, not
+// by user command. Separate Vectorize index so a channel's session memory never pollutes (or leaks
+// into) another channel's search results or the shared knowledge base; same embedding model + shape.
 
 import puppeteer from "@cloudflare/puppeteer";
 
@@ -13,6 +21,7 @@ interface Env {
   BROWSER: Fetcher;
   AI: Ai;
   KNOWLEDGE: VectorizeIndex;
+  MEMORY: VectorizeIndex;
   BRAVE_API_KEY: string;
   TAVILY_API_KEY: string;
   SEARCH_SECRET: string;
@@ -63,6 +72,8 @@ export default {
     if (url.pathname === "/fetch")            return handleFetch(req, env);
     if (url.pathname === "/knowledge/index")  return handleKnowledgeIndex(req, env);
     if (url.pathname === "/knowledge/search") return handleKnowledgeSearch(req, env);
+    if (url.pathname === "/memory/index")     return handleMemoryIndex(req, env);
+    if (url.pathname === "/memory/search")    return handleMemorySearch(req, env);
 
     return err("Not found", 404);
   },
@@ -226,6 +237,61 @@ async function handleKnowledgeSearch(req: Request, env: Env): Promise<Response> 
       score:   m.score,
       title:   (m.metadata as Record<string, string>)?.title   ?? "",
       content: (m.metadata as Record<string, string>)?.content ?? "",
+    })),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Session memory (Vectorize + Workers AI embeddings) -- slate#90
+//
+// Auto-ingested RAG over conversation, storyboard-brief, and studio API traffic, so Slate never has
+// to re-ask a group for something it already saw pass through it. Same embed() / index shape as the
+// knowledge base above, but a distinct index (MEMORY) so this never mixes with the manual, shared
+// !learn corpus. `kind` tags what was ingested ("chat" | "brief" | "traffic") for observability.
+// ---------------------------------------------------------------------------
+
+async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
+  const { content, kind = "chat", channelId = "", meta = {} } = await req.json() as {
+    content: string; kind?: string; channelId?: string; meta?: Record<string, string>;
+  };
+  if (!content) return err("content is required");
+
+  const vector = await embed(env, content.slice(0, 4_000));
+  const id = crypto.randomUUID();
+
+  await env.MEMORY.upsert([{
+    id,
+    values: vector,
+    metadata: {
+      kind:      String(kind).slice(0, 40),
+      channelId: channelId.slice(0, 64),
+      content:   content.slice(0, 2_000),
+      createdAt: new Date().toISOString(),
+      ...Object.fromEntries(Object.entries(meta).slice(0, 10).map(([k, v]) => [k.slice(0, 40), String(v).slice(0, 200)])),
+    },
+  }]);
+
+  return json({ id });
+}
+
+async function handleMemorySearch(req: Request, env: Env): Promise<Response> {
+  const { query, channelId, topK = 5 } = await req.json() as { query: string; channelId?: string; topK?: number };
+  if (!query) return err("query is required");
+
+  const vector  = await embed(env, query);
+  const results = await env.MEMORY.query(vector, {
+    topK:           Math.min(topK, 10),
+    returnMetadata: "all",
+    ...(channelId ? { filter: { channelId } } : {}),
+  });
+
+  return json({
+    results: results.matches.map(m => ({
+      id:        m.id,
+      score:     m.score,
+      kind:      (m.metadata as Record<string, string>)?.kind      ?? "",
+      content:   (m.metadata as Record<string, string>)?.content   ?? "",
+      createdAt: (m.metadata as Record<string, string>)?.createdAt ?? "",
     })),
   });
 }
