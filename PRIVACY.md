@@ -9,6 +9,11 @@ kept. Slate is open-source software (AGPL-3.0); anyone may run their own instanc
 that operator is the data controller for their instance and this policy describes the
 SkyPhusion-operated instance.
 
+> The product-wide commitment this policy is written against is
+> [`PRIVACY-COMMITMENT.md`](PRIVACY-COMMITMENT.md), a pointer to the canonical copy at the
+> constellation hub. It names Slate, in bold, as one of the two products where "we hold nothing" is
+> not literally true.
+
 ## What Slate is
 
 Slate is an AI assistant that participates in a Discord channel to help a team plan and develop
