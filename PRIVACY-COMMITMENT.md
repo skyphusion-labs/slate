@@ -20,15 +20,31 @@ NCII bright line is the one stated exception.
 
 ## Why the pointer sits here
 
-**Slate is self-host only. We do not run it for you.** It is built for other people to run
-themselves, so the Discord application, the bot token, the subprocessor relationships, and the
-message content all belong to the operator who runs the instance. We ship the code and hold none of
-it.
+**Slate is self-host only, permanently. We do not run it for you, and we could not.**
 
-That is what makes this pointer worth more than a boilerplate link. Slate reads Discord message
-content, which makes it the most invasive-sounding thing in the product line, and an honest
-disclosure about that is genuinely owed. **It is owed by the operator to their users, and it is not
-ours to make.**
+That is a structural fact rather than a policy choice, and the difference matters. Hosting Slate
+would require something we have not built and do not want: a **per-user AI metering and billing
+system.** Slate is conversational and open-ended by design, so every interaction spends model tokens
+against no natural chargeable unit. There is no version of offering this as a service that does not
+start with building that first.
+
+So the distribution model is the answer, and it is the whole of it: **you take Slate, you create
+your own application on the Discord Developer Portal, you host it, and you bring your own AI
+spend.** The Discord application, the bot token, the model provider, and the message content are all
+yours. We ship the code and hold none of it.
+
+**The privacy consequence is the strongest form of anything in the commitment.** There is no hosted
+Slate, therefore there is no Slate user data at Skyphusion Labs, therefore there is nothing for us
+to disclose about it. Not "we choose not to look at it": we are **structurally not in the path.**
+Message content flows between your Discord application and your model provider. We are never a party
+to it.
+
+That is the commitment's own thesis in its cleanest form. **The strongest privacy guarantee is not a
+promise not to look. It is not being in a position to.**
+
+None of which makes the disclosure go away; it moves it. Slate reads Discord message content, which
+makes it the most invasive-sounding thing in the product line, and an honest disclosure about that
+is genuinely owed. **It is owed by the operator to their users, and it is not ours to make.**
 
 So if you deploy Slate, this part is yours: you are the data controller. It uses the Discord
 **Message Content** intent, it reads the text of messages in every channel it is added to, it
