@@ -1,6 +1,6 @@
 name: deploy
 
-# Deploy the Cloudflare Workers for slate on a green push to main.
+# Deploy the Cloudflare Workers for slate on a pushed version tag (v*).
 #
 # Scope: this repo has three runtime pieces --
 #   - the Discord bot (bot.mjs), which runs as a host-side Docker stack on its
@@ -10,8 +10,10 @@ name: deploy
 # The two Workers (committed wrangler.toml, plain `wrangler deploy`) are the
 # CI-deployable pieces; the bot stays a deliberate host-side step.
 #
-# Runner: GitHub-hosted ubuntu-latest. PUBLIC repo, so deploy is gated to
-# push-to-main (never a fork PR) and runs fork-safe.
+# Runner: GitHub-hosted ubuntu-latest. PUBLIC repo. Deploy is tag-only: a bare
+# merge to main NEVER redeploys the Workers. Cut a SemVer tag to ship
+# (git tag -a v0.1.0 -m "..." && git push origin v0.1.0). workflow_dispatch is
+# kept for a deliberate manual redeploy.
 #
 # Required repo secrets (Settings -> Secrets and variables -> Actions):
 #   CLOUDFLARE_API_TOKEN   -- CF API token with Workers Scripts:Edit (the
@@ -20,13 +22,14 @@ name: deploy
 
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-slate-workers-main
+  group: deploy-slate-workers-tag
   cancel-in-progress: false
 
 jobs:
