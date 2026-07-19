@@ -11,8 +11,9 @@ SkyPhusion-operated instance.
 
 > The product-wide commitment this policy is written against is
 > [`PRIVACY-COMMITMENT.md`](PRIVACY-COMMITMENT.md), a pointer to the canonical copy at the
-> constellation hub. It names Slate, in bold, as one of the two products where "we hold nothing" is
-> not literally true.
+> constellation hub. Slate is **self-host only**: Skyphusion Labs ships the code and does not run
+> Slate as a service, so the operator of an instance holds its data and carries the controller's
+> duties.
 
 ## What Slate is
 
