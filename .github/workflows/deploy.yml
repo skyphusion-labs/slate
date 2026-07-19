@@ -1,6 +1,6 @@
 name: deploy
 
-# Deploy the Cloudflare Workers for slate on a green push to main.
+# Deploy the Cloudflare Workers for slate on a pushed version tag (v*).
 #
 # Scope: this repo has three runtime pieces --
 #   - the Discord bot (bot.mjs), which runs as a host-side Docker stack on its
@@ -10,8 +10,12 @@ name: deploy
 # The two Workers (committed wrangler.toml, plain `wrangler deploy`) are the
 # CI-deployable pieces; the bot stays a deliberate host-side step.
 #
-# Runner: GitHub-hosted ubuntu-latest. PUBLIC repo, so deploy is gated to
-# push-to-main (never a fork PR) and runs fork-safe.
+# Runner: GitHub-hosted ubuntu-latest. PUBLIC repo. Deploy is tag-only: a bare
+# merge to main NEVER redeploys the Workers. Cut a SemVer tag to ship
+# (git tag -a v0.1.0 -m "..." && git push origin v0.1.0). workflow_dispatch may
+# run checkout only; deploy steps are guarded with
+# `if: startsWith(github.ref, 'refs/tags/v')` so a branch dispatch never ships
+# (common-thread pattern). Gap 1: tag must be an ancestor of origin/main.
 #
 # Required repo secrets (Settings -> Secrets and variables -> Actions):
 #   CLOUDFLARE_API_TOKEN   -- CF API token with Workers Scripts:Edit (the
@@ -20,13 +24,14 @@ name: deploy
 
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-slate-workers-main
+  group: deploy-slate-workers-tag
   cancel-in-progress: false
 
 jobs:
@@ -39,12 +44,24 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Assert tag is on main (no prod deploy from an unmerged branch)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME points at $GITHUB_SHA which is not on origin/main; refusing to deploy an unreviewed commit"
+            exit 1
+          fi
       - uses: actions/setup-node@v7
         with:
           node-version: 22
 
       # search-worker has a committed package-lock.json -> npm ci.
       - name: Deploy search-worker (slate-search)
+        if: startsWith(github.ref, 'refs/tags/v')
         working-directory: search-worker
         run: |
           npm ci
@@ -53,6 +70,7 @@ jobs:
 
       # log-worker has no lockfile (dev deps only) -> npm install.
       - name: Deploy log-worker (slate-logs)
+        if: startsWith(github.ref, 'refs/tags/v')
         working-directory: log-worker
         run: |
           npm install
