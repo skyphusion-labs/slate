@@ -3,7 +3,7 @@
 Notable changes per release. SemVer-style (pre-1.0: PATCH for fixes / backend-only tweaks, MINOR
 for new features). Newest first.
 
-## v0.5.0 (2026-07-16)
+## v0.5.0 (2026-07-21)
 
 - **feat(memory): studio traffic ledger + session-memory RAG (#90).** Half of this epic (D1 session
   state -- brief, history, cast bindings) already shipped as infra; this lands the other half. Every
@@ -20,6 +20,12 @@ for new features). Newest first.
   `channelContext` (`AsyncLocalStorage`, entered at the top of the Discord event handlers) attributes
   every ledger/memory write to the right channel without threading a channelId through the ~100
   `studio.mjs` call sites in `bot.mjs` / `studio-api.mjs`.
+- **ci: tag-gated Worker deploy + image publish guard (#111, #112, #113).** Cloudflare Workers
+  (`slate-search`, `slate-logs`) deploy only on a pushed `v*` tag (not every merge to `main`). The
+  GHCR bot image workflow refuses to publish unless the tagged commit is on `origin/main`.
+- **deps:** `@anthropic-ai/sdk` 0.112.x (#114); Cloudflare toolchain bumps in search-worker and
+  log-worker (#115, #116).
+- **docs(legal):** `PRIVACY-COMMITMENT.md` pointer stub (#110).
 
 ## v0.4.4 (2026-07-12)
 
