@@ -1,3 +1,7 @@
+## v0.5.1
+
+Release sync bump (2026-07-21). No functional changes in this tag.
+
 # Changelog
 
 Notable changes per release. SemVer-style (pre-1.0: PATCH for fixes / backend-only tweaks, MINOR
