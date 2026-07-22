@@ -250,8 +250,14 @@ if (CFG.vivijureUrl && !CFG.studioApiToken) {
 // When search is enabled, all three capability secrets must be long + pairwise distinct
 // (matches search-worker capabilitySecretsReady). Empty SEARCH_WORKER_URL leaves search off.
 if (CFG.searchUrl) {
-  const secrets = [CFG.searchSecret, CFG.fetchSecret, CFG.memorySecret];
-  if (secrets.some((s) => s.length < 16) || new Set(secrets).size !== 3) {
+  const searchOk = CFG.searchSecret.length >= 16;
+  const fetchOk = CFG.fetchSecret.length >= 16;
+  const memoryOk = CFG.memorySecret.length >= 16;
+  const distinct =
+    CFG.searchSecret !== CFG.fetchSecret &&
+    CFG.searchSecret !== CFG.memorySecret &&
+    CFG.fetchSecret !== CFG.memorySecret;
+  if (!searchOk || !fetchOk || !memoryOk || !distinct) {
     log(
       'ERROR: SEARCH_WORKER_URL requires distinct SEARCH_SECRET, FETCH_SECRET, MEMORY_SECRET (each >= 16 chars)',
     );

@@ -105,10 +105,8 @@ export default {
     if (req.method !== "POST") return err("Method not allowed", 405);
 
     if (!capabilitySecretsReady(env)) {
-      return err(
-        "capability secrets not configured: set distinct SEARCH_SECRET, FETCH_SECRET, MEMORY_SECRET (each >= 16 chars)",
-        503,
-      );
+      // Generic body — do not disclose which secret policy failed.
+      return err("Service Unavailable", 503);
     }
 
     const providedHeader = req.headers.get("X-Search-Secret") ?? "";
