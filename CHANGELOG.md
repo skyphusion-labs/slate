@@ -1,3 +1,13 @@
+## v0.5.2
+
+PATCH: security grind after the v0.5.1 sync bump.
+
+- **fix(security):** SSRF harden on `/fetch` (DNS pin, redirect walk, CNAME recursion) (#121/#124)
+- **fix(security):** capability secrets + sharp 0.35.3 overrides (#124)
+- **fix(security):** prod compose uses pinned GHCR image (no root `npm ci` bind-mount) (#125)
+- **fix(security):** split coverage so fork PRs run with read-only token (#126)
+- **ci:** adversarial security audit workflow
+
 ## v0.5.1
 
 Release sync bump (2026-07-21). No functional changes in this tag.
