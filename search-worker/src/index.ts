@@ -6,8 +6,8 @@
 //   POST /fetch   { url }
 //   POST /knowledge/index   { content, title?, author? }
 //   POST /knowledge/search  { query, topK?: number }
-//   POST /memory/index   { content, kind, channelId?, meta? }
-//   POST /memory/search  { query, channelId?, topK?: number }
+//   POST /memory/index   { content, kind, channelId, meta? }   // channelId required
+//   POST /memory/search  { query, channelId, topK?: number }   // channelId required
 //
 // `knowledge/*` is the manual, cross-channel `!learn` corpus (film references a user explicitly
 // submits). `memory/*` (slate#90) is Slate's own auto-ingested session memory -- conversation turns,
@@ -16,6 +16,18 @@
 // into) another channel's search results or the shared knowledge base; same embedding model + shape.
 
 import puppeteer from "@cloudflare/puppeteer";
+import {
+  channelAllowed,
+  isNonEmptyChannelId,
+  MAX_KNOWLEDGE_CONTENT_LENGTH,
+  sanitizeSearchQuery,
+  secretsMatch,
+} from "./search-input";
+import {
+  isSsrfSafeResolved,
+  MAX_FETCH_URL_LENGTH,
+  resolvePublicRedirectChain,
+} from "./ssrf";
 
 interface Env {
   BROWSER: Fetcher;
@@ -24,7 +36,21 @@ interface Env {
   MEMORY: VectorizeIndex;
   BRAVE_API_KEY: string;
   TAVILY_API_KEY: string;
+  /** Auth for /search and /knowledge/* (X-Search-Secret). */
   SEARCH_SECRET: string;
+  /** Auth for /fetch — required, no fallback (limits lateral movement). */
+  FETCH_SECRET: string;
+  /** Auth for /memory/* — required, no fallback (limits lateral movement). */
+  MEMORY_SECRET: string;
+  /** Optional comma-separated Discord channel IDs allowed for /memory/*. When set, others 403. */
+  MEMORY_CHANNEL_ALLOWLIST?: string;
+}
+
+/** Capability-scoped secret for the request path (no cross-capability fallback). */
+function secretForPath(pathname: string, env: Env): string {
+  if (pathname === "/fetch") return env.FETCH_SECRET || "";
+  if (pathname.startsWith("/memory")) return env.MEMORY_SECRET || "";
+  return env.SEARCH_SECRET || "";
 }
 
 interface BraveResult {
@@ -40,16 +66,13 @@ interface TavilyResult {
   score?: number;
 }
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Search-Secret",
-};
+// No CORS: slate-search is called only by the Discord bot (server-side). Browser
+// origins must not be able to attach X-Search-Secret via a malicious page.
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
@@ -61,12 +84,19 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 
-    if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+    if (req.method === "OPTIONS") return err("Method not allowed", 405);
     if (req.method === "GET" && url.pathname === "/health") return json({ ok: true });
 
-    const secret = req.headers.get("X-Search-Secret");
-    if (!secret || secret !== env.SEARCH_SECRET) return err("Unauthorized", 401);
+    // Capability-scoped Wrangler secrets (never source literals). Header name stays
+    // X-Search-Secret for bot compat; value must match the secret for this path.
+    // FETCH_SECRET and MEMORY_SECRET are required (no SEARCH_SECRET fallback).
     if (req.method !== "POST") return err("Method not allowed", 405);
+
+    const providedHeader = req.headers.get("X-Search-Secret") ?? "";
+    const configured = secretForPath(url.pathname, env);
+    if (!configured || !(await secretsMatch(providedHeader, configured))) {
+      return err("Unauthorized", 401);
+    }
 
     if (url.pathname === "/search")           return handleSearch(req, env);
     if (url.pathname === "/fetch")            return handleFetch(req, env);
@@ -84,16 +114,28 @@ export default {
 // ---------------------------------------------------------------------------
 
 async function handleSearch(req: Request, env: Env): Promise<Response> {
-  const { query, type = "web" } = await req.json() as { query: string; type?: string };
+  const body = await req.json() as { query?: unknown; type?: unknown };
+  const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
+  const type = body.type === "research" ? "research" : "web";
 
   if (type === "research") {
+    if (!env.TAVILY_API_KEY) return err("Research not configured", 503);
+    // Tavily documents Bearer auth; keep the key out of the JSON body.
     const res = await fetch("https://api.tavily.com/search", {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ api_key: env.TAVILY_API_KEY, query, search_depth: "advanced", include_answer: true, max_results: 6 }),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${env.TAVILY_API_KEY}`,
+      },
+      body: JSON.stringify({
+        query,
+        search_depth: "advanced",
+        include_answer: true,
+        max_results: 6,
+      }),
     });
-    if (!res.ok) return err(`Tavily error: ${res.status}`);
+    if (!res.ok) return err("Search upstream error", 502);
     const data = await res.json() as { answer?: string; results?: TavilyResult[] };
     return json({
       answer:  data.answer ?? null,
@@ -101,11 +143,12 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
     });
   }
 
+  if (!env.BRAVE_API_KEY) return err("Search not configured", 503);
   const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=6&text_decorations=false`;
   const res = await fetch(braveUrl, {
     headers: { "Accept": "application/json", "Accept-Encoding": "gzip", "X-Subscription-Token": env.BRAVE_API_KEY },
   });
-  if (!res.ok) return err(`Brave error: ${res.status}`);
+  if (!res.ok) return err("Search upstream error", 502);
   const data = await res.json() as { web?: { results?: BraveResult[] } };
   return json({
     results: (data.web?.results ?? []).map(r => ({ title: r.title, url: r.url, description: r.description?.slice(0, 400) })),
@@ -116,68 +159,67 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
 // CF Browser Rendering (puppeteer)
 // ---------------------------------------------------------------------------
 
-// Returns false for schemes other than http/https, and for hosts that map to
-// loopback, private, link-local, metadata, or mesh-internal addresses.
-// Covers literal IPs -- decimal/hex/short-form normalize to dotted-quad via the
-// WHATWG URL parser before our check -- and reserved names. Residual gap: DNS
-// rebinding (public name -> private A record) requires resolving the host first.
-function isSsrfSafe(raw: string): boolean {
-  let parsed: URL;
-  try { parsed = new URL(raw); } catch { return false; }
-
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-
-  const host = parsed.hostname.toLowerCase();
-
-  if (host === "localhost" || host.endsWith(".internal") || host.endsWith(".local")) return false;
-
-  const v4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (v4) {
-    const [a, b] = [+v4[1], +v4[2]];
-    if (
-      a === 0                              ||  // 0/8 unspecified
-      a === 10                             ||  // 10/8 RFC1918
-      a === 127                            ||  // 127/8 loopback
-      (a === 100 && b >= 64 && b <= 127)   ||  // 100.64/10 CGNAT / WARP mesh
-      (a === 169 && b === 254)             ||  // 169.254/16 link-local + cloud metadata
-      (a === 172 && b >= 16 && b <= 31)    ||  // 172.16/12 RFC1918
-      (a === 192 && b === 168)             ||  // 192.168/16 RFC1918
-      (a === 198 && (b === 18 || b === 19)) || // 198.18/15 benchmark
-      a >= 240                                  // 240/4 reserved
-    ) return false;
-  }
-
-  // Literal IPv6: URL.hostname KEEPS the brackets ("[::1]"), so strip them before matching --
-  // otherwise none of these checks ever fire (the original bug let [::1] / [fe80::1] / [fc00::1] /
-  // [::ffff:169.254.169.254] through). Scoping to the bracketed literal also avoids false-positives
-  // on real domains like fconline.com / fd-cdn.com.
-  if (host.startsWith("[") && host.endsWith("]")) {
-    const h6 = host.slice(1, -1);
-    if (
-      h6 === "::" || h6 === "::1"                 ||  // unspecified / loopback
-      h6.startsWith("::ffff:")                    ||  // IPv4-mapped (covers mapped loopback/metadata)
-      h6.startsWith("fe80:")                      ||  // link-local
-      h6.startsWith("fc") || h6.startsWith("fd")      // unique local fc00::/7
-    ) return false;
-  }
-
-  return true;
-}
-
 async function handleFetch(req: Request, env: Env): Promise<Response> {
-  const { url } = await req.json() as { url: string };
-  if (!url) return err("url is required");
-  if (!isSsrfSafe(url)) return err("URL not allowed: must be a public http/https address", 400);
+  const body = await req.json() as { url?: unknown };
+  const url = typeof body.url === "string" ? body.url : "";
+  if (url.length === 0) return err("url is required");
+  if (url.length > MAX_FETCH_URL_LENGTH) return err("url exceeds maximum length", 400);
+
+  // Pre-walk redirects in the Worker (DoH + Location/Refresh). Then fetch the
+  // final HTML in the Worker and render via setContent so Chromium never dials
+  // the target (no meta-refresh / DNS-rebinding browser navigation).
+  const targetUrl = await resolvePublicRedirectChain(url);
+  if (!targetUrl) {
+    return err("URL not allowed: must be a public http/https address", 400);
+  }
+  // Re-check immediately before the Worker GET (rebinding TOCTOU).
+  if (!(await isSsrfSafeResolved(targetUrl))) {
+    return err("URL not allowed: must be a public http/https address", 400);
+  }
+
+  const MAX_HTML_BYTES = 1_500_000;
+  let html: string;
+  try {
+    const upstream = await fetch(targetUrl, {
+      method: "GET",
+      redirect: "manual",
+      headers: { "User-Agent": "slate-search-fetch/1.0" },
+    });
+    if (upstream.status >= 300 && upstream.status < 400) {
+      return err("URL not allowed: unexpected redirect", 400);
+    }
+    if (!upstream.ok) return err("Fetch upstream error", 502);
+    const ctype = (upstream.headers.get("content-type") || "").toLowerCase();
+    if (ctype && !ctype.includes("html") && !ctype.includes("text/plain") && !ctype.includes("xml")) {
+      return err("URL not allowed: unsupported content type", 400);
+    }
+    const declared = Number(upstream.headers.get("content-length") || "0");
+    if (declared > MAX_HTML_BYTES) return err("Fetch upstream error", 502);
+    html = await upstream.text();
+    if (html.length > MAX_HTML_BYTES) return err("Fetch upstream error", 502);
+  } catch (e: unknown) {
+    console.error("worker fetch failed:", e instanceof Error ? e.message : String(e));
+    return err("Fetch upstream error", 502);
+  }
 
   const browser = await puppeteer.launch(env.BROWSER);
   try {
     const page = await browser.newPage();
+    await page.setJavaScriptEnabled(false);
+    // Offline + intercept: Chromium must not dial anything while parsing setContent HTML.
+    await page.setOfflineMode(true);
     await page.setRequestInterception(true);
-    page.on("request", (r) => {
-      if (["image", "stylesheet", "font", "media"].includes(r.resourceType())) r.abort();
-      else r.continue();
+    page.on("request", async (r) => {
+      try { await r.abort(); } catch { /* ignore */ }
     });
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25_000 });
+    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 25_000 });
+    await page.evaluate(() => {
+      for (const el of document.querySelectorAll("meta[http-equiv]")) {
+        if ((el.getAttribute("http-equiv") || "").toLowerCase() === "refresh") {
+          el.remove();
+        }
+      }
+    });
     const { title, content } = await page.evaluate(() => {
       ["script", "style", "nav", "header", "footer", "aside", "noscript"]
         .forEach(tag => document.querySelectorAll(tag).forEach(el => el.remove()));
@@ -186,9 +228,10 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
         content: (document.body?.innerText ?? "").replace(/\s{3,}/g, "\n\n").trim().slice(0, 10_000),
       };
     });
-    return json({ url, title, content });
+    return json({ url: targetUrl, title, content });
   } catch (e: unknown) {
-    return err(`Browser fetch failed: ${e instanceof Error ? e.message : String(e)}`, 500);
+    console.error("browser render failed:", e instanceof Error ? e.message : String(e));
+    return err("Browser fetch failed", 500);
   } finally {
     await browser.close();
   }
@@ -204,10 +247,17 @@ async function embed(env: Env, text: string): Promise<number[]> {
 }
 
 async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
-  const { content, title = "", author = "" } = await req.json() as { content: string; title?: string; author?: string };
-  if (!content) return err("content is required");
+  const body = await req.json() as { content?: unknown; title?: unknown; author?: unknown };
+  if (typeof body.content !== "string" || body.content.length === 0) {
+    return err("content is required");
+  }
+  if (body.content.length > MAX_KNOWLEDGE_CONTENT_LENGTH) {
+    return err("content exceeds maximum length", 400);
+  }
+  const title = typeof body.title === "string" ? body.title : "";
+  const author = typeof body.author === "string" ? body.author : "";
 
-  const vector = await embed(env, content.slice(0, 4_000));
+  const vector = await embed(env, body.content.slice(0, 4_000));
   const id = crypto.randomUUID();
 
   await env.KNOWLEDGE.upsert([{
@@ -215,7 +265,7 @@ async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
     values: vector,
     metadata: {
       title:     title.slice(0, 200),
-      content:   content.slice(0, 2_000),
+      content:   body.content.slice(0, 2_000),
       author:    author.slice(0, 100),
       createdAt: new Date().toISOString(),
     },
@@ -225,8 +275,10 @@ async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleKnowledgeSearch(req: Request, env: Env): Promise<Response> {
-  const { query, topK = 5 } = await req.json() as { query: string; topK?: number };
+  const body = await req.json() as { query?: unknown; topK?: unknown };
+  const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
+  const topK = typeof body.topK === "number" && Number.isFinite(body.topK) ? body.topK : 5;
 
   const vector  = await embed(env, query);
   const results = await env.KNOWLEDGE.query(vector, { topK: Math.min(topK, 10), returnMetadata: "all" });
@@ -251,12 +303,29 @@ async function handleKnowledgeSearch(req: Request, env: Env): Promise<Response> 
 // ---------------------------------------------------------------------------
 
 async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
-  const { content, kind = "chat", channelId = "", meta = {} } = await req.json() as {
-    content: string; kind?: string; channelId?: string; meta?: Record<string, string>;
+  const body = await req.json() as {
+    content?: unknown; kind?: unknown; channelId?: unknown; meta?: unknown;
   };
-  if (!content) return err("content is required");
+  if (typeof body.content !== "string" || body.content.length === 0) {
+    return err("content is required");
+  }
+  if (body.content.length > MAX_KNOWLEDGE_CONTENT_LENGTH) {
+    return err("content exceeds maximum length", 400);
+  }
+  if (!isNonEmptyChannelId(body.channelId)) {
+    return err("channelId is required (non-empty string)", 400);
+  }
+  const channelId = body.channelId.trim();
+  if (!channelAllowed(env.MEMORY_CHANNEL_ALLOWLIST, channelId)) {
+    return err("Forbidden", 403);
+  }
+  const kind = typeof body.kind === "string" ? body.kind : "chat";
+  const meta =
+    body.meta && typeof body.meta === "object" && !Array.isArray(body.meta)
+      ? body.meta as Record<string, string>
+      : {};
 
-  const vector = await embed(env, content.slice(0, 4_000));
+  const vector = await embed(env, body.content.slice(0, 4_000));
   const id = crypto.randomUUID();
 
   await env.MEMORY.upsert([{
@@ -264,8 +333,8 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
     values: vector,
     metadata: {
       kind:      String(kind).slice(0, 40),
-      channelId: channelId.slice(0, 64),
-      content:   content.slice(0, 2_000),
+      channelId,
+      content:   body.content.slice(0, 2_000),
       createdAt: new Date().toISOString(),
       ...Object.fromEntries(Object.entries(meta).slice(0, 10).map(([k, v]) => [k.slice(0, 40), String(v).slice(0, 200)])),
     },
@@ -275,14 +344,23 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleMemorySearch(req: Request, env: Env): Promise<Response> {
-  const { query, channelId, topK = 5 } = await req.json() as { query: string; channelId?: string; topK?: number };
+  const body = await req.json() as { query?: unknown; channelId?: unknown; topK?: unknown };
+  const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
+  if (!isNonEmptyChannelId(body.channelId)) {
+    return err("channelId is required (non-empty string)", 400);
+  }
+  const channelId = body.channelId.trim();
+  if (!channelAllowed(env.MEMORY_CHANNEL_ALLOWLIST, channelId)) {
+    return err("Forbidden", 403);
+  }
+  const topK = typeof body.topK === "number" && Number.isFinite(body.topK) ? body.topK : 5;
 
   const vector  = await embed(env, query);
   const results = await env.MEMORY.query(vector, {
     topK:           Math.min(topK, 10),
     returnMetadata: "all",
-    ...(channelId ? { filter: { channelId } } : {}),
+    filter:         { channelId },
   });
 
   return json({
