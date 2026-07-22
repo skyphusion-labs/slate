@@ -177,6 +177,7 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
     return err("URL not allowed: must be a public http/https address", 400);
   }
 
+  const MAX_HTML_BYTES = 1_500_000;
   let html: string;
   try {
     const upstream = await fetch(targetUrl, {
@@ -192,7 +193,10 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
     if (ctype && !ctype.includes("html") && !ctype.includes("text/plain") && !ctype.includes("xml")) {
       return err("URL not allowed: unsupported content type", 400);
     }
+    const declared = Number(upstream.headers.get("content-length") || "0");
+    if (declared > MAX_HTML_BYTES) return err("Fetch upstream error", 502);
     html = await upstream.text();
+    if (html.length > MAX_HTML_BYTES) return err("Fetch upstream error", 502);
   } catch (e: unknown) {
     console.error("worker fetch failed:", e instanceof Error ? e.message : String(e));
     return err("Fetch upstream error", 502);
@@ -202,8 +206,9 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
   try {
     const page = await browser.newPage();
     await page.setJavaScriptEnabled(false);
+    // Offline + intercept: Chromium must not dial anything while parsing setContent HTML.
+    await page.setOfflineMode(true);
     await page.setRequestInterception(true);
-    // Deny all network from the renderer -- content is already in-process.
     page.on("request", async (r) => {
       try { await r.abort(); } catch { /* ignore */ }
     });
