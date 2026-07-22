@@ -1,3 +1,7 @@
+## v0.5.3
+
+PATCH: fix Worker deploy typecheck (exclude `*.test.ts`) so the v0.5.2 security wave can ship to Cloudflare.
+
 ## v0.5.2
 
 PATCH: security grind after the v0.5.1 sync bump.
