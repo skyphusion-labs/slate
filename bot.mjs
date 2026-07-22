@@ -36,8 +36,8 @@
 //   SEARCH_WORKER_URL           slate-search Worker base URL (enables web search + knowledge base +
 //                               the auto-ingested session-memory RAG index, slate#90)
 //   SEARCH_SECRET               X-Search-Secret for /search and /knowledge/*
-//   FETCH_SECRET                X-Search-Secret for /fetch (required by worker; may equal SEARCH_SECRET initially)
-//   MEMORY_SECRET               X-Search-Secret for /memory/* (required by worker; may equal SEARCH_SECRET initially)
+//   FETCH_SECRET                X-Search-Secret for /fetch (required; no SEARCH_SECRET fallback)
+//   MEMORY_SECRET               X-Search-Secret for /memory/* (required; no SEARCH_SECRET fallback)
 //
 // ! commands:
 //   !brief                 show the current storyboard state (and render settings)
@@ -233,8 +233,9 @@ const CFG = {
   gatewayEndpoint:      process.env.CF_GATEWAY_ENDPOINT     ?? '',
   searchUrl:            process.env.SEARCH_WORKER_URL       ?? '',
   searchSecret:         process.env.SEARCH_SECRET           ?? '',
-  fetchSecret:          process.env.FETCH_SECRET            || process.env.SEARCH_SECRET || '',
-  memorySecret:         process.env.MEMORY_SECRET           || process.env.SEARCH_SECRET || '',
+  // No fallback to SEARCH_SECRET -- worker requires distinct capability secrets.
+  fetchSecret:          process.env.FETCH_SECRET            ?? '',
+  memorySecret:         process.env.MEMORY_SECRET           ?? '',
 };
 
 // The studio uses bearer-token auth (vivijure #423). If a studio URL is configured, a token is

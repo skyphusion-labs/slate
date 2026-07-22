@@ -120,6 +120,7 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
   const type = body.type === "research" ? "research" : "web";
 
   if (type === "research") {
+    if (!env.TAVILY_API_KEY) return err("Research not configured", 503);
     // Tavily documents Bearer auth; keep the key out of the JSON body.
     const res = await fetch("https://api.tavily.com/search", {
       method:  "POST",
@@ -142,6 +143,7 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
     });
   }
 
+  if (!env.BRAVE_API_KEY) return err("Search not configured", 503);
   const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=6&text_decorations=false`;
   const res = await fetch(braveUrl, {
     headers: { "Accept": "application/json", "Accept-Encoding": "gzip", "X-Subscription-Token": env.BRAVE_API_KEY },
