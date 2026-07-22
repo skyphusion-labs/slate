@@ -386,9 +386,8 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
     return err("Forbidden", 403);
   }
   const kind = typeof body.kind === "string" ? body.kind : "chat";
-  // Ignore caller meta entirely — do not store method/path traffic tags in Vectorize
-  // (retrieval must only ever surface kind/content/createdAt for the channel).
-  void sanitizeMemoryMeta(body.meta);
+  // Allow-listed method/path tags only; reserved fields always win (written last).
+  const safeMeta = sanitizeMemoryMeta(body.meta);
 
   const vector = await embed(env, body.content.slice(0, 4_000));
   const id = crypto.randomUUID();
@@ -397,6 +396,7 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
     id,
     values: vector,
     metadata: {
+      ...safeMeta,
       kind:      String(kind).slice(0, 40),
       channelId,
       content:   body.content.slice(0, 2_000),
