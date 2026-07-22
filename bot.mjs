@@ -730,11 +730,13 @@ async function executeTool(name, input) {
     // Uses process.env.FETCH_SECRET via CFG.fetchSecret only -- never SEARCH_SECRET.
     if (!CFG.fetchSecret) return 'Fetch not configured.';
     if (!isFetchUrlAllowed(input.url)) return 'Fetch URL rejected (must be http(s) public host).';
-    // Canonicalize hostname (strip trailing dots) so Worker DoH sees the same host we checked.
+    // Canonicalize: strip trailing-dot host + any embedded credentials before /fetch.
     let fetchUrl = input.url;
     try {
       const u = new URL(input.url);
       u.hostname = u.hostname.replace(/\.+$/, '');
+      u.username = '';
+      u.password = '';
       fetchUrl = u.href;
     } catch { /* isFetchUrlAllowed already validated */ }
     log(`[search] fetch: ${fetchUrl}`);

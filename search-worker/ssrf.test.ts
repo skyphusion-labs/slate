@@ -230,6 +230,7 @@ describe("memory channel allowlist", () => {
 describe("channel id + memory meta sanitize", () => {
   it("accepts Discord-length snowflakes only", () => {
     expect(isNonEmptyChannelId("123456789012345678")).toBe(true);
+    expect(isNonEmptyChannelId("1234567890123456")).toBe(true); // 16 digits
     expect(isNonEmptyChannelId("12345")).toBe(false);
     expect(isNonEmptyChannelId("not-a-number")).toBe(false);
   });
