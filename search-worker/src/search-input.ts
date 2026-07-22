@@ -96,12 +96,10 @@ export function capabilitySecretsReady(env: {
 
 export function channelAllowed(allowlist: string | undefined, channelId: string): boolean {
   const raw = allowlist?.trim();
-  if (!raw) return true;
-  const allowed = new Set(
-    raw
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => isNonEmptyChannelId(s)),
-  );
+  if (!raw) return true; // unset = open
+  const entries = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  const allowed = new Set(entries.filter((s) => isNonEmptyChannelId(s)));
+  // Fail closed: a non-empty allowlist that contains zero valid snowflakes denies all.
+  if (allowed.size === 0) return false;
   return allowed.has(channelId.trim());
 }

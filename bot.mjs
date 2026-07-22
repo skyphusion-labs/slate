@@ -692,17 +692,21 @@ function searchHeaders(secret) {
   return { 'Content-Type': 'application/json', 'X-Search-Secret': secret };
 }
 
-/** Bot-side precheck before calling /fetch (Worker still runs full SSRF/DoH). */
+/** Bot-side precheck before calling /fetch (Worker still runs full SSRF/DoH).
+ *  Hostnames only — no IP literals (v4/v6). Trailing dots stripped. */
 function isFetchUrlAllowed(raw) {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return false;
   let u;
   try { u = new URL(raw); } catch { return false; }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
   if (u.username || u.password) return false;
-  const h = u.hostname.toLowerCase();
+  // Strip trailing dots (localhost. etc.) then require a DNS label hostname only.
+  const h = u.hostname.toLowerCase().replace(/\.+$/, '');
   if (!h || h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0') return false;
-  if (/^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h)) return false;
-  if (h === '::1' || h.startsWith('[') || h.includes(':')) return false; // reject raw IPv6 literals
+  // Reject any IP literal (v4 dotted, v6, or bracketed).
+  if (h.includes(':') || h.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return false;
+  // DNS hostname: labels of alnum/hyphen, at least one dot (no bare TLD / single-label).
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h)) return false;
   return true;
 }
 
