@@ -752,11 +752,17 @@ async function executeTool(name, input) {
     return res.ok ? res.json() : `Knowledge search error: ${res.status}`;
   }
   if (name === 'search_memory') {
+    // Capability: MEMORY_SECRET only (never SEARCH_SECRET / KNOWLEDGE_SECRET / FETCH_SECRET).
     if (!CFG.memorySecret) return 'Memory search not configured.';
     const channelId = currentChannelId();
     if (!channelId) return 'Memory search requires an active Discord channel.';
     log(`[search] memory: ${input.query} (channel ${channelId})`);
-    const res = await fetch(`${CFG.searchUrl}/memory/search`, { method: 'POST', headers: searchHeaders(CFG.memorySecret), body: JSON.stringify({ query: input.query, channelId }) });
+    const memorySecret = CFG.memorySecret;
+    const res = await fetch(`${CFG.searchUrl}/memory/search`, {
+      method: 'POST',
+      headers: searchHeaders(memorySecret),
+      body: JSON.stringify({ query: input.query, channelId }),
+    });
     return res.ok ? res.json() : `Memory search error: ${res.status}`;
   }
   return 'Unknown tool';
