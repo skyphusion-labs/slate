@@ -35,7 +35,8 @@
 //   CF_GATEWAY_ENDPOINT         CF AI Gateway compat URL (used to derive the Anthropic base URL).
 //   SEARCH_WORKER_URL           slate-search Worker base URL (enables web search + knowledge base +
 //                               the auto-ingested session-memory RAG index, slate#90)
-//   SEARCH_SECRET               X-Search-Secret for /search and /knowledge/*
+//   SEARCH_SECRET               X-Search-Secret for /search only
+//   KNOWLEDGE_SECRET            X-Search-Secret for /knowledge/* (required; no SEARCH_SECRET fallback)
 //   FETCH_SECRET                X-Search-Secret for /fetch (required; no SEARCH_SECRET fallback)
 //   MEMORY_SECRET               X-Search-Secret for /memory/* (required; no SEARCH_SECRET fallback)
 //
@@ -231,11 +232,12 @@ const CFG = {
   d1DatabaseId:         process.env.CF_D1_DATABASE_ID       ?? '',
   aigToken:             process.env.CF_AIG_TOKEN            ?? '',
   gatewayEndpoint:      process.env.CF_GATEWAY_ENDPOINT     ?? '',
-  searchUrl:            process.env.SEARCH_WORKER_URL       ?? '',
-  searchSecret:         process.env.SEARCH_SECRET           ?? '',
-  // No fallback to SEARCH_SECRET -- worker requires distinct capability secrets.
-  fetchSecret:          process.env.FETCH_SECRET            ?? '',
-  memorySecret:         process.env.MEMORY_SECRET           ?? '',
+  searchUrl:            (process.env.SEARCH_WORKER_URL ?? '').trim(),
+  // Capability-scoped (trimmed to match Worker): SEARCH / KNOWLEDGE / FETCH / MEMORY.
+  searchSecret:         (process.env.SEARCH_SECRET ?? '').trim(),
+  knowledgeSecret:      (process.env.KNOWLEDGE_SECRET ?? '').trim(),
+  fetchSecret:          (process.env.FETCH_SECRET ?? '').trim(),
+  memorySecret:         (process.env.MEMORY_SECRET ?? '').trim(),
 };
 
 // The studio uses bearer-token auth (vivijure #423). If a studio URL is configured, a token is
@@ -243,6 +245,23 @@ const CFG = {
 if (CFG.vivijureUrl && !CFG.studioApiToken) {
   log('ERROR: STUDIO_API_TOKEN is required when VIVIJURE_API_URL is set (studio bearer auth, vivijure #423)');
   process.exit(1);
+}
+
+// When search is enabled, all four capability secrets must be long + pairwise distinct
+// (matches search-worker capabilitySecretsReady). Empty SEARCH_WORKER_URL leaves search off.
+if (CFG.searchUrl) {
+  const s = CFG.searchSecret;
+  const k = CFG.knowledgeSecret;
+  const f = CFG.fetchSecret;
+  const m = CFG.memorySecret;
+  const longOk = s.length >= 16 && k.length >= 16 && f.length >= 16 && m.length >= 16;
+  const distinct = s !== k && s !== f && s !== m && k !== f && k !== m && f !== m;
+  if (!longOk || !distinct) {
+    log(
+      'ERROR: SEARCH_WORKER_URL requires distinct SEARCH_SECRET, KNOWLEDGE_SECRET, FETCH_SECRET, MEMORY_SECRET (each >= 16 chars)',
+    );
+    process.exit(1);
+  }
 }
 
 // Anthropic client via CF AI Gateway (native path, not OpenAI compat).
@@ -675,35 +694,49 @@ function searchHeaders(secret) {
 }
 
 async function executeTool(name, input) {
-  if (!CFG.searchUrl || !CFG.searchSecret) return 'Search not configured.';
+  // Per-capability secrets: do not require SEARCH_SECRET for fetch/memory/knowledge tools.
+  if (!CFG.searchUrl) return 'Search not configured.';
 
   if (name === 'web_search') {
+    if (!CFG.searchSecret) return 'Search not configured.';
     log(`[search] web: ${input.query}`);
     const res = await fetch(`${CFG.searchUrl}/search`, { method: 'POST', headers: searchHeaders(CFG.searchSecret), body: JSON.stringify({ query: input.query, type: 'web' }) });
     return res.ok ? res.json() : `Search error: ${res.status}`;
   }
   if (name === 'research') {
+    if (!CFG.searchSecret) return 'Search not configured.';
     log(`[search] research: ${input.query}`);
     const res = await fetch(`${CFG.searchUrl}/search`, { method: 'POST', headers: searchHeaders(CFG.searchSecret), body: JSON.stringify({ query: input.query, type: 'research' }) });
     return res.ok ? res.json() : `Research error: ${res.status}`;
   }
   if (name === 'fetch_page') {
+    // FETCH_SECRET only. SSRF enforcement is entirely in the Worker (/fetch).
     if (!CFG.fetchSecret) return 'Fetch not configured.';
     log(`[search] fetch: ${input.url}`);
-    const res = await fetch(`${CFG.searchUrl}/fetch`, { method: 'POST', headers: searchHeaders(CFG.fetchSecret), body: JSON.stringify({ url: input.url }) });
+    const res = await fetch(`${CFG.searchUrl}/fetch`, {
+      method: 'POST',
+      headers: searchHeaders(CFG.fetchSecret),
+      body: JSON.stringify({ url: input.url }),
+    });
     return res.ok ? res.json() : `Fetch error: ${res.status}`;
   }
   if (name === 'search_knowledge') {
+    if (!CFG.knowledgeSecret) return 'Knowledge search not configured.';
     log(`[search] knowledge: ${input.query}`);
-    const res = await fetch(`${CFG.searchUrl}/knowledge/search`, { method: 'POST', headers: searchHeaders(CFG.searchSecret), body: JSON.stringify({ query: input.query }) });
+    const res = await fetch(`${CFG.searchUrl}/knowledge/search`, { method: 'POST', headers: searchHeaders(CFG.knowledgeSecret), body: JSON.stringify({ query: input.query }) });
     return res.ok ? res.json() : `Knowledge search error: ${res.status}`;
   }
   if (name === 'search_memory') {
+    // Capability: MEMORY_SECRET only (never SEARCH_SECRET / KNOWLEDGE_SECRET / FETCH_SECRET).
     if (!CFG.memorySecret) return 'Memory search not configured.';
     const channelId = currentChannelId();
     if (!channelId) return 'Memory search requires an active Discord channel.';
     log(`[search] memory: ${input.query} (channel ${channelId})`);
-    const res = await fetch(`${CFG.searchUrl}/memory/search`, { method: 'POST', headers: searchHeaders(CFG.memorySecret), body: JSON.stringify({ query: input.query, channelId }) });
+    const res = await fetch(`${CFG.searchUrl}/memory/search`, {
+      method: 'POST',
+      headers: searchHeaders(CFG.memorySecret),
+      body: JSON.stringify({ query: input.query, channelId }),
+    });
     return res.ok ? res.json() : `Memory search error: ${res.status}`;
   }
   return 'Unknown tool';
@@ -1812,7 +1845,7 @@ setInterval(async () => {
 // ---------------------------------------------------------------------------
 
 async function indexKnowledge(content, title = '', author = '') {
-  if (!CFG.searchUrl || !CFG.searchSecret) return { ok: false, error: 'Search worker not configured' };
+  if (!CFG.searchUrl || !CFG.knowledgeSecret) return { ok: false, error: 'Search worker not configured' };
 
   let text = content;
   let resolvedTitle = title || content.slice(0, 80);
@@ -1830,7 +1863,7 @@ async function indexKnowledge(content, title = '', author = '') {
 
   const res = await fetch(`${CFG.searchUrl}/knowledge/index`, {
     method:  'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.searchSecret },
+    headers: { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.knowledgeSecret },
     body:    JSON.stringify({ content: text, title: resolvedTitle, author }),
   });
   if (!res.ok) return { ok: false, error: `index failed ${res.status}` };

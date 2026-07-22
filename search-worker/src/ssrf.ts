@@ -19,6 +19,9 @@ export const MAX_FETCH_URL_LENGTH = 2048;
 export const MAX_REDIRECT_HOPS = 5;
 const MAX_CNAME_DEPTH = 4;
 
+// Cloudflare DoH (valid TLS / SNI). Rebinding resistance comes from double-resolve
+// in isSsrfSafeResolved, not cross-provider Answer equality (CF vs Google often
+// differ on CNAME vs A shape and would self-DoS every fetch).
 const DOH_ENDPOINT = "https://cloudflare-dns.com/dns-query";
 const DOH_TYPE_A = 1;
 const DOH_TYPE_NS = 2;
@@ -381,17 +384,9 @@ export async function resolvePublicRedirectChain(
       continue;
     }
 
-    // Non-3xx: still honor Refresh header (meta-refresh equivalent at HTTP layer).
-    const refresh = res.headers.get("Refresh");
-    if (refresh) {
-      const target = parseRefreshHeader(refresh);
-      if (!target) return null;
-      const next = resolveRedirectLocation(current, target);
-      if (!next) return null;
-      current = next;
-      continue;
-    }
-
+    // Refresh-on-2xx is a rare legacy pattern; do not follow it as a redirect hop
+    // (3xx Location already handled above). Meta-refresh inside HTML is stripped
+    // after setContent in handleFetch.
     return current;
   }
 

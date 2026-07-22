@@ -17,9 +17,11 @@
 
 import puppeteer from "@cloudflare/puppeteer";
 import {
+  capabilitySecretsReady,
   channelAllowed,
   isNonEmptyChannelId,
   MAX_KNOWLEDGE_CONTENT_LENGTH,
+  sanitizeMemoryMeta,
   sanitizeSearchQuery,
   secretsMatch,
 } from "./search-input";
@@ -29,6 +31,9 @@ import {
   resolvePublicRedirectChain,
 } from "./ssrf";
 
+/** Reject POST JSON bodies larger than this (Content-Length + post-read check). */
+const MAX_JSON_BODY_BYTES = 256_000;
+
 interface Env {
   BROWSER: Fetcher;
   AI: Ai;
@@ -36,8 +41,10 @@ interface Env {
   MEMORY: VectorizeIndex;
   BRAVE_API_KEY: string;
   TAVILY_API_KEY: string;
-  /** Auth for /search and /knowledge/* (X-Search-Secret). */
+  /** Auth for /search (X-Search-Secret). */
   SEARCH_SECRET: string;
+  /** Auth for /knowledge/* — required, no SEARCH_SECRET fallback. */
+  KNOWLEDGE_SECRET: string;
   /** Auth for /fetch — required, no fallback (limits lateral movement). */
   FETCH_SECRET: string;
   /** Auth for /memory/* — required, no fallback (limits lateral movement). */
@@ -46,11 +53,20 @@ interface Env {
   MEMORY_CHANNEL_ALLOWLIST?: string;
 }
 
-/** Capability-scoped secret for the request path (no cross-capability fallback). */
+/** Capability-scoped secret for exact known routes (no prefix matching / no fallback). */
 function secretForPath(pathname: string, env: Env): string {
-  if (pathname === "/fetch") return env.FETCH_SECRET || "";
-  if (pathname.startsWith("/memory")) return env.MEMORY_SECRET || "";
-  return env.SEARCH_SECRET || "";
+  if (pathname === "/fetch") return (env.FETCH_SECRET || "").trim();
+  if (pathname === "/memory/index" || pathname === "/memory/search") {
+    return (env.MEMORY_SECRET || "").trim();
+  }
+  if (pathname === "/knowledge/index" || pathname === "/knowledge/search") {
+    return (env.KNOWLEDGE_SECRET || "").trim();
+  }
+  if (pathname === "/search") {
+    return (env.SEARCH_SECRET || "").trim();
+  }
+  // Unknown path: no secret maps → 401 (never authenticate-then-404 with SEARCH_SECRET).
+  return "";
 }
 
 interface BraveResult {
@@ -80,6 +96,37 @@ function err(msg: string, status = 400): Response {
   return json({ error: msg }, status);
 }
 
+/**
+ * Read and parse a POST JSON body with a hard size cap.
+ * Requires a valid Content-Length (411 if missing/invalid); 413 if over max;
+ * re-checks byte length after reading; 400 on invalid JSON.
+ */
+async function readJsonBody(req: Request): Promise<
+  { ok: true; body: unknown } | { ok: false; response: Response }
+> {
+  const cl = req.headers.get("Content-Length");
+  if (cl === null || cl.trim() === "") {
+    return { ok: false, response: err("Content-Length required", 411) };
+  }
+  const declared = Number(cl);
+  if (!Number.isFinite(declared) || !Number.isInteger(declared) || declared < 0) {
+    return { ok: false, response: err("Content-Length required", 411) };
+  }
+  if (declared > MAX_JSON_BODY_BYTES) {
+    return { ok: false, response: err("Payload Too Large", 413) };
+  }
+  const buf = await req.arrayBuffer();
+  if (buf.byteLength > MAX_JSON_BODY_BYTES) {
+    return { ok: false, response: err("Payload Too Large", 413) };
+  }
+  try {
+    const text = new TextDecoder().decode(buf);
+    return { ok: true, body: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false, response: err("Invalid JSON", 400) };
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -89,8 +136,13 @@ export default {
 
     // Capability-scoped Wrangler secrets (never source literals). Header name stays
     // X-Search-Secret for bot compat; value must match the secret for this path.
-    // FETCH_SECRET and MEMORY_SECRET are required (no SEARCH_SECRET fallback).
+    // All four secrets required, >=16 chars, pairwise distinct (no SEARCH_SECRET fallback).
     if (req.method !== "POST") return err("Method not allowed", 405);
+
+    if (!capabilitySecretsReady(env)) {
+      // Generic body — do not disclose which secret policy failed.
+      return err("Service Unavailable", 503);
+    }
 
     const providedHeader = req.headers.get("X-Search-Secret") ?? "";
     const configured = secretForPath(url.pathname, env);
@@ -114,7 +166,9 @@ export default {
 // ---------------------------------------------------------------------------
 
 async function handleSearch(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { query?: unknown; type?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { query?: unknown; type?: unknown };
   const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
   const type = body.type === "research" ? "research" : "web";
@@ -160,7 +214,9 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 async function handleFetch(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { url?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { url?: unknown };
   const url = typeof body.url === "string" ? body.url : "";
   if (url.length === 0) return err("url is required");
   if (url.length > MAX_FETCH_URL_LENGTH) return err("url exceeds maximum length", 400);
@@ -207,9 +263,12 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
     const page = await browser.newPage();
     await page.setJavaScriptEnabled(false);
     // Offline + intercept: Chromium must not dial anything while parsing setContent HTML.
+    // Always abort (never continue). shouldAbortBrowserRequestResolved still runs so any
+    // future continue() path keeps DNS re-check coverage, and the helper stays live.
     await page.setOfflineMode(true);
     await page.setRequestInterception(true);
     page.on("request", async (r) => {
+      // Always abort — never continue(). Offline setContent must not dial.
       try { await r.abort(); } catch { /* ignore */ }
     });
     await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 25_000 });
@@ -247,7 +306,9 @@ async function embed(env: Env, text: string): Promise<number[]> {
 }
 
 async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { content?: unknown; title?: unknown; author?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { content?: unknown; title?: unknown; author?: unknown };
   if (typeof body.content !== "string" || body.content.length === 0) {
     return err("content is required");
   }
@@ -275,7 +336,9 @@ async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleKnowledgeSearch(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { query?: unknown; topK?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { query?: unknown; topK?: unknown };
   const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
   const topK = typeof body.topK === "number" && Number.isFinite(body.topK) ? body.topK : 5;
@@ -303,7 +366,9 @@ async function handleKnowledgeSearch(req: Request, env: Env): Promise<Response> 
 // ---------------------------------------------------------------------------
 
 async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as {
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as {
     content?: unknown; kind?: unknown; channelId?: unknown; meta?: unknown;
   };
   if (typeof body.content !== "string" || body.content.length === 0) {
@@ -312,18 +377,17 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
   if (body.content.length > MAX_KNOWLEDGE_CONTENT_LENGTH) {
     return err("content exceeds maximum length", 400);
   }
-  if (!isNonEmptyChannelId(body.channelId)) {
-    return err("channelId is required (non-empty string)", 400);
+  const channelId =
+    typeof body.channelId === "string" ? body.channelId.trim() : "";
+  if (!isNonEmptyChannelId(channelId)) {
+    return err("channelId is required (Discord snowflake)", 400);
   }
-  const channelId = body.channelId.trim();
   if (!channelAllowed(env.MEMORY_CHANNEL_ALLOWLIST, channelId)) {
     return err("Forbidden", 403);
   }
   const kind = typeof body.kind === "string" ? body.kind : "chat";
-  const meta =
-    body.meta && typeof body.meta === "object" && !Array.isArray(body.meta)
-      ? body.meta as Record<string, string>
-      : {};
+  // Allow-listed method/path tags only; reserved fields always win (written last).
+  const safeMeta = sanitizeMemoryMeta(body.meta);
 
   const vector = await embed(env, body.content.slice(0, 4_000));
   const id = crypto.randomUUID();
@@ -332,11 +396,11 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
     id,
     values: vector,
     metadata: {
+      ...safeMeta,
       kind:      String(kind).slice(0, 40),
       channelId,
       content:   body.content.slice(0, 2_000),
       createdAt: new Date().toISOString(),
-      ...Object.fromEntries(Object.entries(meta).slice(0, 10).map(([k, v]) => [k.slice(0, 40), String(v).slice(0, 200)])),
     },
   }]);
 
@@ -344,13 +408,16 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleMemorySearch(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { query?: unknown; channelId?: unknown; topK?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { query?: unknown; channelId?: unknown; topK?: unknown };
   const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
-  if (!isNonEmptyChannelId(body.channelId)) {
-    return err("channelId is required (non-empty string)", 400);
+  const channelId =
+    typeof body.channelId === "string" ? body.channelId.trim() : "";
+  if (!isNonEmptyChannelId(channelId)) {
+    return err("channelId is required (Discord snowflake)", 400);
   }
-  const channelId = body.channelId.trim();
   if (!channelAllowed(env.MEMORY_CHANNEL_ALLOWLIST, channelId)) {
     return err("Forbidden", 403);
   }
@@ -363,13 +430,18 @@ async function handleMemorySearch(req: Request, env: Env): Promise<Response> {
     filter:         { channelId },
   });
 
+  // Defense in depth: drop any match whose stored channelId disagrees with the
+  // request (Vectorize filter bug / metadata pollution must not cross tenants).
+  // Response omits method/path meta entirely.
   return json({
-    results: results.matches.map(m => ({
-      id:        m.id,
-      score:     m.score,
-      kind:      (m.metadata as Record<string, string>)?.kind      ?? "",
-      content:   (m.metadata as Record<string, string>)?.content   ?? "",
-      createdAt: (m.metadata as Record<string, string>)?.createdAt ?? "",
-    })),
+    results: results.matches
+      .filter((m) => (m.metadata as Record<string, string> | undefined)?.channelId === channelId)
+      .map((m) => ({
+        id:        m.id,
+        score:     m.score,
+        kind:      (m.metadata as Record<string, string>)?.kind      ?? "",
+        content:   (m.metadata as Record<string, string>)?.content   ?? "",
+        createdAt: (m.metadata as Record<string, string>)?.createdAt ?? "",
+      })),
   });
 }

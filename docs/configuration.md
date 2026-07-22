@@ -213,12 +213,36 @@ empty to run Slate without search.
 - **Example:** `SEARCH_WORKER_URL=https://slate-search.example.workers.dev`
 
 ### `SEARCH_SECRET`
-- **What:** a shared password Slate sends to the search Worker in the
-  `X-Search-Secret` header.
-- **Why:** it stops strangers from using your search Worker. It **must** match
-  the `SEARCH_SECRET` you set on the Worker (group 8).
-- **Where:** you invent it. Any long random string.
+- **What:** password Slate sends as `X-Search-Secret` for `/search` only.
+- **Why:** it stops strangers from using web/research search. It **must** match
+  the Worker's `SEARCH_SECRET` (group 8). Mint a distinct value from
+  `KNOWLEDGE_SECRET` / `FETCH_SECRET` / `MEMORY_SECRET` so a leak of one
+  capability does not open the others.
+- **Where:** you invent it (`openssl rand -hex 32`).
 - **Example:** `SEARCH_SECRET=a-long-random-shared-string`
+
+### `KNOWLEDGE_SECRET`
+- **What:** password for `/knowledge/*` only. **Required** for `!learn` and
+  `search_knowledge`; there is no fallback to `SEARCH_SECRET`.
+- **Why:** capability isolation -- a stolen search secret must not allow
+  writing or reading the shared knowledge base.
+- **Set on the Worker with:** `npx wrangler secret put KNOWLEDGE_SECRET`
+- **Example:** `KNOWLEDGE_SECRET=another-long-random-string`
+
+### `FETCH_SECRET`
+- **What:** password for `/fetch` only. **Required** when using `fetch_page`;
+  there is no fallback to `SEARCH_SECRET`.
+- **Why:** capability isolation -- a stolen search secret must not allow
+  arbitrary URL fetches.
+- **Set on the Worker with:** `npx wrangler secret put FETCH_SECRET`
+- **Example:** `FETCH_SECRET=another-long-random-string`
+
+### `MEMORY_SECRET`
+- **What:** password for `/memory/*` only. **Required** for session memory;
+  no `SEARCH_SECRET` fallback.
+- **Why:** capability isolation for the per-channel memory index.
+- **Set on the Worker with:** `npx wrangler secret put MEMORY_SECRET`
+- **Example:** `MEMORY_SECRET=yet-another-long-random-string`
 
 ---
 
@@ -273,12 +297,18 @@ indexes -- `slate-knowledge` and `slate-memory`) live in
 - **Where:** tavily.com.
 - **Set with:** `npx wrangler secret put TAVILY_API_KEY`
 
-### `SEARCH_SECRET`
-- **What:** the shared password the Worker requires on incoming requests.
-- **Why:** it must equal the bot's `SEARCH_SECRET` (group 6) so only your Slate
-  can use the Worker.
-- **Where:** the same value you put in `slate.env`.
-- **Set with:** `npx wrangler secret put SEARCH_SECRET`
+### `SEARCH_SECRET` / `KNOWLEDGE_SECRET` / `FETCH_SECRET` / `MEMORY_SECRET`
+- **What:** four distinct passwords the Worker requires on incoming requests
+  (`/search`, `/knowledge/*`, `/fetch`, `/memory/*` respectively).
+- **Why:** each must equal the matching bot secret (group 6). There is **no**
+  fallback from `KNOWLEDGE_SECRET` / `FETCH_SECRET` / `MEMORY_SECRET` to
+  `SEARCH_SECRET`.
+- **Where:** the same values you put in `slate.env`.
+- **Set with:**
+  `npx wrangler secret put SEARCH_SECRET`,
+  `npx wrangler secret put KNOWLEDGE_SECRET`,
+  `npx wrangler secret put FETCH_SECRET`,
+  `npx wrangler secret put MEMORY_SECRET`
 
 To create the knowledge-base index once, run
 `npx wrangler vectorize create slate-knowledge --dimensions=1024 --metric=cosine`,
@@ -288,11 +318,11 @@ then `npm run deploy` from `search-worker/`.
 
 The `slate-memory` Vectorize index is separate from `slate-knowledge` above: it holds Slate's own
 auto-ingested memory of conversation turns, storyboard-brief snapshots, and studio API traffic per
-Discord channel, not user-submitted `!learn` references. Same secrets, same Worker, no extra config
-on the bot side beyond `SEARCH_WORKER_URL` / `SEARCH_SECRET` (group 6), which now also drive
-`/memory/index` and `/memory/search`. bot.mjs writes to it automatically (chat turns, brief updates,
-and every mutating studio call); `!memory <query>` / `/memory` let a person query it directly, and
-the `search_memory` tool lets Slate consult it mid-conversation instead of re-asking the group.
+Discord channel, not user-submitted `!learn` references. Same Worker; bot config needs
+`SEARCH_WORKER_URL` plus `MEMORY_SECRET` (group 6) for `/memory/index` and `/memory/search`.
+bot.mjs writes to it automatically (chat turns, brief updates, and every mutating studio call);
+`!memory <query>` / `/memory` let a person query it directly, and the `search_memory` tool lets
+Slate consult it mid-conversation instead of re-asking the group.
 
 Create the index and its `channelId` metadata index once (so `/memory/search` can scope results to
 a single channel):

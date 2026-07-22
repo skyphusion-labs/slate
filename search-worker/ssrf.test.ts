@@ -12,7 +12,13 @@ import {
   shouldAbortBrowserRequestResolved,
   type DnsLookup,
 } from "./src/ssrf";
-import { channelAllowed, sanitizeSearchQuery } from "./src/search-input";
+import {
+  capabilitySecretsReady,
+  channelAllowed,
+  isNonEmptyChannelId,
+  sanitizeMemoryMeta,
+  sanitizeSearchQuery,
+} from "./src/search-input";
 
 describe("search-worker SSRF filtering", () => {
   it("allows public http and https document URLs (sync shape)", () => {
@@ -165,7 +171,7 @@ describe("search-worker SSRF filtering", () => {
     ).toBeNull();
   });
 
-  it("pre-walks Refresh header redirects to a public final URL", async () => {
+  it("does not treat Refresh on 2xx as a redirect hop", async () => {
     const lookup: DnsLookup = async () => ["93.184.216.34"];
     const fetchImpl = async (input: string) => {
       if (input === "https://public.example/start") {
@@ -178,7 +184,7 @@ describe("search-worker SSRF filtering", () => {
     };
     expect(
       await resolvePublicRedirectChain("https://public.example/start", { lookup, fetchImpl }),
-    ).toBe("https://public.example/final");
+    ).toBe("https://public.example/start");
   });
 
   it("pre-walks HTTP redirects to the final public document URL", async () => {
@@ -208,11 +214,95 @@ describe("search query sanitization", () => {
 });
 
 describe("memory channel allowlist", () => {
-  it("allows any channel when unset; otherwise requires membership", () => {
-    expect(channelAllowed(undefined, "123")).toBe(true);
-    expect(channelAllowed("", "123")).toBe(true);
-    expect(channelAllowed("111,222", "222")).toBe(true);
-    expect(channelAllowed("111,222", "333")).toBe(false);
+  const a = "123456789012345678";
+  const b = "234567890123456789";
+  const c = "345678901234567890";
+  it("allows any channel when unset; otherwise requires snowflake membership", () => {
+    expect(channelAllowed(undefined, a)).toBe(true);
+    expect(channelAllowed("", a)).toBe(true);
+    expect(channelAllowed(`${a},${b}`, b)).toBe(true);
+    expect(channelAllowed(`${a},${b}`, c)).toBe(false);
+    // Short / non-snowflake allowlist entries are ignored (not valid tenants).
+    expect(channelAllowed("123,456", "123")).toBe(false);
+  });
+});
+
+describe("channel id + memory meta sanitize", () => {
+  it("accepts Discord-length snowflakes only", () => {
+    expect(isNonEmptyChannelId("123456789012345678")).toBe(true);
+    expect(isNonEmptyChannelId("1234567890123456")).toBe(true); // 16 digits
+    expect(isNonEmptyChannelId("12345")).toBe(false);
+    expect(isNonEmptyChannelId("not-a-number")).toBe(false);
+  });
+
+  it("never lets meta overwrite reserved Vectorize keys", () => {
+    expect(
+      sanitizeMemoryMeta({
+        channelId: "999999999999999999",
+        kind: "evil",
+        content: "nope",
+        createdAt: "x",
+        id: "y",
+        method: "POST",
+        path: "/api/x",
+        extra: "drop-me",
+      }),
+    ).toEqual({ method: "POST", path: "/api/x" });
+  });
+
+  it("rejects free-form meta values (strict method/path charset)", () => {
+    expect(sanitizeMemoryMeta({ method: "TRACE", path: "/ok" })).toEqual({ path: "/ok" });
+    expect(sanitizeMemoryMeta({ method: "GET", path: "https://evil.example/" })).toEqual({
+      method: "GET",
+    });
+    expect(sanitizeMemoryMeta({ method: "get", path: "/studio/api" })).toEqual({
+      method: "GET",
+      path: "/studio/api",
+    });
+  });
+});
+
+describe("capabilitySecretsReady", () => {
+  it("requires four long, pairwise-distinct secrets", () => {
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "a".repeat(16),
+        FETCH_SECRET: "b".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+        KNOWLEDGE_SECRET: "d".repeat(16),
+      }),
+    ).toBe(true);
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "a".repeat(16),
+        FETCH_SECRET: "a".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+        KNOWLEDGE_SECRET: "d".repeat(16),
+      }),
+    ).toBe(false);
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "a".repeat(16),
+        FETCH_SECRET: "b".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+        KNOWLEDGE_SECRET: "a".repeat(16),
+      }),
+    ).toBe(false);
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "short",
+        FETCH_SECRET: "b".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+        KNOWLEDGE_SECRET: "d".repeat(16),
+      }),
+    ).toBe(false);
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "a".repeat(16),
+        FETCH_SECRET: "b".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+      }),
+    ).toBe(false);
   });
 });
 
