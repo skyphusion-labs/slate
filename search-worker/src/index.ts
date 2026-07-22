@@ -48,10 +48,20 @@ interface Env {
   MEMORY_CHANNEL_ALLOWLIST?: string;
 }
 
-/** Capability-scoped secret for the request path (no cross-capability fallback). */
+/** Capability-scoped secret for exact known routes (no prefix matching / no fallback). */
 function secretForPath(pathname: string, env: Env): string {
   if (pathname === "/fetch") return env.FETCH_SECRET || "";
-  if (pathname.startsWith("/memory")) return env.MEMORY_SECRET || "";
+  if (pathname === "/memory/index" || pathname === "/memory/search") {
+    return env.MEMORY_SECRET || "";
+  }
+  if (
+    pathname === "/search" ||
+    pathname === "/knowledge/index" ||
+    pathname === "/knowledge/search"
+  ) {
+    return env.SEARCH_SECRET || "";
+  }
+  // Unknown path: require SEARCH_SECRET then 404 (never open unauthenticated).
   return env.SEARCH_SECRET || "";
 }
 
@@ -370,13 +380,18 @@ async function handleMemorySearch(req: Request, env: Env): Promise<Response> {
     filter:         { channelId },
   });
 
+  // Defense in depth: drop any match whose stored channelId disagrees with the
+  // request (Vectorize filter bug / metadata pollution must not cross tenants).
+  // Response omits method/path meta entirely.
   return json({
-    results: results.matches.map(m => ({
-      id:        m.id,
-      score:     m.score,
-      kind:      (m.metadata as Record<string, string>)?.kind      ?? "",
-      content:   (m.metadata as Record<string, string>)?.content   ?? "",
-      createdAt: (m.metadata as Record<string, string>)?.createdAt ?? "",
-    })),
+    results: results.matches
+      .filter((m) => (m.metadata as Record<string, string> | undefined)?.channelId === channelId)
+      .map((m) => ({
+        id:        m.id,
+        score:     m.score,
+        kind:      (m.metadata as Record<string, string>)?.kind      ?? "",
+        content:   (m.metadata as Record<string, string>)?.content   ?? "",
+        createdAt: (m.metadata as Record<string, string>)?.createdAt ?? "",
+      })),
   });
 }

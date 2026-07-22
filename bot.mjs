@@ -693,13 +693,12 @@ async function executeTool(name, input) {
     return res.ok ? res.json() : `Research error: ${res.status}`;
   }
   if (name === 'fetch_page') {
-    // Uses FETCH_SECRET only (CFG.fetchSecret) -- never SEARCH_SECRET.
-    const fetchSecret = CFG.fetchSecret;
-    if (!fetchSecret) return 'Fetch not configured.';
+    // Uses process.env.FETCH_SECRET via CFG.fetchSecret only -- never SEARCH_SECRET.
+    if (!CFG.fetchSecret) return 'Fetch not configured.';
     log(`[search] fetch: ${input.url}`);
     const res = await fetch(`${CFG.searchUrl}/fetch`, {
       method: 'POST',
-      headers: searchHeaders(fetchSecret),
+      headers: searchHeaders(CFG.fetchSecret),
       body: JSON.stringify({ url: input.url }),
     });
     return res.ok ? res.json() : `Fetch error: ${res.status}`;
