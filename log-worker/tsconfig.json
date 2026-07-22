@@ -3,9 +3,21 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    "lib": ["ES2022", "DOM"],
-    "types": ["@cloudflare/workers-types"],
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "types": [
+      "@cloudflare/workers-types"
+    ],
     "strict": true,
     "skipLibCheck": true
-  }
+  },
+  "exclude": [
+    "**/*.test.ts",
+    "node_modules"
+  ],
+  "include": [
+    "*.ts"
+  ]
 }
