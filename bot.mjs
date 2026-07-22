@@ -232,14 +232,12 @@ const CFG = {
   d1DatabaseId:         process.env.CF_D1_DATABASE_ID       ?? '',
   aigToken:             process.env.CF_AIG_TOKEN            ?? '',
   gatewayEndpoint:      process.env.CF_GATEWAY_ENDPOINT     ?? '',
-  searchUrl:            process.env.SEARCH_WORKER_URL       ?? '',
-  searchSecret:         process.env.SEARCH_SECRET           ?? '',
-  // Capability-scoped: Worker rejects SEARCH_SECRET on /knowledge/*, /fetch, /memory/*.
-  // These MUST be set (distinct values) whenever SEARCH_WORKER_URL is used for
-  // those routes -- there is no fallback to searchSecret.
-  knowledgeSecret:      process.env.KNOWLEDGE_SECRET        ?? '',
-  fetchSecret:          process.env.FETCH_SECRET            ?? '',
-  memorySecret:         process.env.MEMORY_SECRET           ?? '',
+  searchUrl:            (process.env.SEARCH_WORKER_URL ?? '').trim(),
+  // Capability-scoped (trimmed to match Worker): SEARCH / KNOWLEDGE / FETCH / MEMORY.
+  searchSecret:         (process.env.SEARCH_SECRET ?? '').trim(),
+  knowledgeSecret:      (process.env.KNOWLEDGE_SECRET ?? '').trim(),
+  fetchSecret:          (process.env.FETCH_SECRET ?? '').trim(),
+  memorySecret:         (process.env.MEMORY_SECRET ?? '').trim(),
 };
 
 // The studio uses bearer-token auth (vivijure #423). If a studio URL is configured, a token is
@@ -252,10 +250,13 @@ if (CFG.vivijureUrl && !CFG.studioApiToken) {
 // When search is enabled, all four capability secrets must be long + pairwise distinct
 // (matches search-worker capabilitySecretsReady). Empty SEARCH_WORKER_URL leaves search off.
 if (CFG.searchUrl) {
-  const secrets = [CFG.searchSecret, CFG.knowledgeSecret, CFG.fetchSecret, CFG.memorySecret];
-  const allLong = secrets.every((s) => s.length >= 16);
-  const distinct = new Set(secrets).size === 4;
-  if (!allLong || !distinct) {
+  const s = CFG.searchSecret;
+  const k = CFG.knowledgeSecret;
+  const f = CFG.fetchSecret;
+  const m = CFG.memorySecret;
+  const longOk = s.length >= 16 && k.length >= 16 && f.length >= 16 && m.length >= 16;
+  const distinct = s !== k && s !== f && s !== m && k !== f && k !== m && f !== m;
+  if (!longOk || !distinct) {
     log(
       'ERROR: SEARCH_WORKER_URL requires distinct SEARCH_SECRET, KNOWLEDGE_SECRET, FETCH_SECRET, MEMORY_SECRET (each >= 16 chars)',
     );
@@ -692,26 +693,8 @@ function searchHeaders(secret) {
   return { 'Content-Type': 'application/json', 'X-Search-Secret': secret };
 }
 
-/** Defense-in-depth shape check only. The Worker /fetch path is authoritative
- *  (DoH + redirect pre-walk + offline setContent). Hostnames only — no IP literals. */
-function isFetchUrlAllowed(raw) {
-  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return false;
-  let u;
-  try { u = new URL(raw); } catch { return false; }
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
-  if (u.username || u.password) return false;
-  // Strip trailing dots (localhost. etc.) then require a DNS label hostname only.
-  const h = u.hostname.toLowerCase().replace(/\.+$/, '');
-  if (!h || h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0') return false;
-  // Reject any IP literal (v4 dotted, v6, or bracketed).
-  if (h.includes(':') || h.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return false;
-  // DNS hostname: labels of alnum/hyphen, at least one dot (no bare TLD / single-label).
-  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h)) return false;
-  return true;
-}
-
 async function executeTool(name, input) {
-  // Per-capability secrets: do not require SEARCH_SECRET for fetch/memory tools.
+  // Per-capability secrets: do not require SEARCH_SECRET for fetch/memory/knowledge tools.
   if (!CFG.searchUrl) return 'Search not configured.';
 
   if (name === 'web_search') {
@@ -727,23 +710,13 @@ async function executeTool(name, input) {
     return res.ok ? res.json() : `Research error: ${res.status}`;
   }
   if (name === 'fetch_page') {
-    // Uses process.env.FETCH_SECRET via CFG.fetchSecret only -- never SEARCH_SECRET.
+    // FETCH_SECRET only. SSRF enforcement is entirely in the Worker (/fetch).
     if (!CFG.fetchSecret) return 'Fetch not configured.';
-    if (!isFetchUrlAllowed(input.url)) return 'Fetch URL rejected (must be http(s) public host).';
-    // Canonicalize: strip trailing-dot host + any embedded credentials before /fetch.
-    let fetchUrl = input.url;
-    try {
-      const u = new URL(input.url);
-      u.hostname = u.hostname.replace(/\.+$/, '');
-      u.username = '';
-      u.password = '';
-      fetchUrl = u.href;
-    } catch { /* isFetchUrlAllowed already validated */ }
-    log(`[search] fetch: ${fetchUrl}`);
+    log(`[search] fetch: ${input.url}`);
     const res = await fetch(`${CFG.searchUrl}/fetch`, {
       method: 'POST',
       headers: searchHeaders(CFG.fetchSecret),
-      body: JSON.stringify({ url: fetchUrl }),
+      body: JSON.stringify({ url: input.url }),
     });
     return res.ok ? res.json() : `Fetch error: ${res.status}`;
   }
