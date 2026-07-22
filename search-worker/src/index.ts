@@ -29,7 +29,6 @@ import {
   isSsrfSafeResolved,
   MAX_FETCH_URL_LENGTH,
   resolvePublicRedirectChain,
-  shouldAbortBrowserRequestResolved,
 } from "./ssrf";
 
 interface Env {
@@ -232,9 +231,7 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
     await page.setOfflineMode(true);
     await page.setRequestInterception(true);
     page.on("request", async (r) => {
-      try {
-        await shouldAbortBrowserRequestResolved(r.url(), r.resourceType());
-      } catch { /* ignore */ }
+      // Always abort — never continue(). Offline setContent must not dial.
       try { await r.abort(); } catch { /* ignore */ }
     });
     await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 25_000 });

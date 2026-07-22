@@ -31,9 +31,11 @@ function sanitizeMemoryMetaValue(key: string, value: unknown): string | null {
     return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(m) ? m : null;
   }
   if (key === "path") {
-    // Absolute URL path only (no scheme/host/credentials).
+    // Absolute URL path only (no scheme/host/credentials / .. / //).
     const p = raw.trim();
-    return /^\/[\w./@%&=+-]{0,199}$/.test(p) ? p : null;
+    if (!/^\/[\w./@&=+-]{0,199}$/.test(p)) return null;
+    if (p.includes("..") || p.includes("//")) return null;
+    return p;
   }
   return null;
 }
@@ -52,24 +54,27 @@ export function sanitizeMemoryMeta(meta: unknown): Record<string, string> {
 }
 
 /**
- * Compare secrets without leaking configured length via early returns.
- * Always SHA-256 both sides (fixed 32-byte compare), then require configured
- * length >= 16 as part of the boolean result.
+ * Constant-time compare of raw secret bytes (no digest). Pads both sides to the
+ * same length so neither content nor length short-circuits the XOR fold.
+ * Also requires configured length >= minLength.
  */
 export async function secretsMatch(
   provided: string,
   configured: string,
   minLength = 16,
 ): Promise<boolean> {
+  // Async signature kept for call-site stability; comparison is sync.
+  await Promise.resolve();
   const enc = new TextEncoder();
-  const [aBuf, bBuf] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(provided)),
-    crypto.subtle.digest("SHA-256", enc.encode(configured)),
-  ]);
-  const a = new Uint8Array(aBuf);
-  const b = new Uint8Array(bBuf);
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
+  const a = enc.encode(provided);
+  const b = enc.encode(configured);
+  const n = Math.max(a.length, b.length, 1);
+  const pa = new Uint8Array(n);
+  const pb = new Uint8Array(n);
+  pa.set(a);
+  pb.set(b);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < n; i++) diff |= pa[i]! ^ pb[i]!;
   const longEnough = configured.length >= minLength ? 0 : 1;
   return (diff | longEnough) === 0;
 }

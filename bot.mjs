@@ -247,6 +247,18 @@ if (CFG.vivijureUrl && !CFG.studioApiToken) {
   process.exit(1);
 }
 
+// When search is enabled, all three capability secrets must be long + pairwise distinct
+// (matches search-worker capabilitySecretsReady). Empty SEARCH_WORKER_URL leaves search off.
+if (CFG.searchUrl) {
+  const secrets = [CFG.searchSecret, CFG.fetchSecret, CFG.memorySecret];
+  if (secrets.some((s) => s.length < 16) || new Set(secrets).size !== 3) {
+    log(
+      'ERROR: SEARCH_WORKER_URL requires distinct SEARCH_SECRET, FETCH_SECRET, MEMORY_SECRET (each >= 16 chars)',
+    );
+    process.exit(1);
+  }
+}
+
 // Anthropic client via CF AI Gateway (native path, not OpenAI compat).
 const anthropicBase = CFG.gatewayEndpoint
   ? CFG.gatewayEndpoint.replace('/compat/chat/completions', '') + '/anthropic'
