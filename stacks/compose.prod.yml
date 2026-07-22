@@ -26,18 +26,25 @@
 # Claude backend (default): set CF_AIG_TOKEN + CF_GATEWAY_ENDPOINT, DISCORD_MODEL=claude-sonnet-4-6
 # Ollama backend:            unset CF_AIG_TOKEN, set OLLAMA_BASE_URL + DISCORD_MODEL=<ollama model>
 #
+# Image: immutable GHCR build from .github/workflows/image.yml (Dockerfile USER node,
+# deps baked via npm ci --omit=dev). Pin an explicit SemVer tag -- never :latest.
+# Bump the tag after cutting a v* release tag in this repo.
+#
 # Deploy:   ssh <deploy-user>@<deploy-host> "cd ~/dev/slate/stacks && docker compose -p slate -f compose.prod.yml up -d"
 # Redeploy: ssh <deploy-user>@<deploy-host> "cd ~/dev/slate/stacks && docker compose -p slate -f compose.prod.yml up -d --force-recreate slate"
 # Logs:     ssh <deploy-user>@<deploy-host> "docker compose -p slate -f ~/dev/slate/stacks/compose.prod.yml logs -f"
 
 services:
   slate:
-    image: node:24
+    image: ghcr.io/skyphusion-labs/slate:0.5.1
     restart: unless-stopped
-    working_dir: /app
-    command: sh -c "npm ci --silent && node bot.mjs"
-    volumes:
-      - /root/dev/slate:/app
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       DISCORD_CHANNEL_IDS: ${DISCORD_CHANNEL_IDS}
