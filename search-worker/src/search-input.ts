@@ -9,8 +9,9 @@ export function sanitizeSearchQuery(value: unknown): string | null {
   return cleaned;
 }
 
+/** Discord snowflake-shaped channel IDs only (rejects arbitrary tenant strings). */
 export function isNonEmptyChannelId(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 64;
+  return typeof value === "string" && /^\d{5,32}$/.test(value.trim());
 }
 
 /**

@@ -27,8 +27,9 @@ index_name = "slate-memory"
 #   BRAVE_API_KEY
 #   TAVILY_API_KEY
 #   SEARCH_SECRET    X-Search-Secret for /search and /knowledge/*
-#   FETCH_SECRET     X-Search-Secret for /fetch (SSRF). Prefer distinct; else SEARCH_SECRET.
-#   MEMORY_SECRET    X-Search-Secret for /memory/*. Prefer distinct; else SEARCH_SECRET.
+#   FETCH_SECRET     X-Search-Secret for /fetch (required; no fallback)
+#   MEMORY_SECRET    X-Search-Secret for /memory/* (required; no fallback)
+# Deploy: put all three (may initially equal SEARCH_SECRET, then rotate to distinct).
 #
 # Optional vars (wrangler.toml [vars] or dashboard):
 #   MEMORY_CHANNEL_ALLOWLIST  comma-separated Discord channel IDs permitted for

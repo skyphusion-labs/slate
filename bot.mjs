@@ -36,8 +36,8 @@
 //   SEARCH_WORKER_URL           slate-search Worker base URL (enables web search + knowledge base +
 //                               the auto-ingested session-memory RAG index, slate#90)
 //   SEARCH_SECRET               X-Search-Secret for /search and /knowledge/*
-//   FETCH_SECRET                X-Search-Secret for /fetch (optional; defaults to SEARCH_SECRET)
-//   MEMORY_SECRET               X-Search-Secret for /memory/* (optional; defaults to SEARCH_SECRET)
+//   FETCH_SECRET                X-Search-Secret for /fetch (required by worker; may equal SEARCH_SECRET initially)
+//   MEMORY_SECRET               X-Search-Secret for /memory/* (required by worker; may equal SEARCH_SECRET initially)
 //
 // ! commands:
 //   !brief                 show the current storyboard state (and render settings)

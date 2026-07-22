@@ -27,7 +27,6 @@ import {
   isSsrfSafeResolved,
   MAX_FETCH_URL_LENGTH,
   resolvePublicRedirectChain,
-  shouldAbortBrowserRequestResolved,
 } from "./ssrf";
 
 interface Env {
@@ -39,18 +38,18 @@ interface Env {
   TAVILY_API_KEY: string;
   /** Auth for /search and /knowledge/* (X-Search-Secret). */
   SEARCH_SECRET: string;
-  /** Auth for /fetch. Prefer distinct from SEARCH_SECRET; falls back to SEARCH_SECRET if unset. */
-  FETCH_SECRET?: string;
-  /** Auth for /memory/*. Prefer distinct from SEARCH_SECRET; falls back to SEARCH_SECRET if unset. */
-  MEMORY_SECRET?: string;
+  /** Auth for /fetch — required, no fallback (limits lateral movement). */
+  FETCH_SECRET: string;
+  /** Auth for /memory/* — required, no fallback (limits lateral movement). */
+  MEMORY_SECRET: string;
   /** Optional comma-separated Discord channel IDs allowed for /memory/*. When set, others 403. */
   MEMORY_CHANNEL_ALLOWLIST?: string;
 }
 
-/** Capability-scoped secret for the request path (limits lateral movement on leak). */
+/** Capability-scoped secret for the request path (no cross-capability fallback). */
 function secretForPath(pathname: string, env: Env): string {
-  if (pathname === "/fetch") return env.FETCH_SECRET || env.SEARCH_SECRET || "";
-  if (pathname.startsWith("/memory")) return env.MEMORY_SECRET || env.SEARCH_SECRET || "";
+  if (pathname === "/fetch") return env.FETCH_SECRET || "";
+  if (pathname.startsWith("/memory")) return env.MEMORY_SECRET || "";
   return env.SEARCH_SECRET || "";
 }
 
@@ -90,13 +89,12 @@ export default {
 
     // Capability-scoped Wrangler secrets (never source literals). Header name stays
     // X-Search-Secret for bot compat; value must match the secret for this path.
-    // Set distinct FETCH_SECRET / MEMORY_SECRET in production so a leaked search
-    // token cannot drive /fetch (SSRF) or /memory (tenant data).
+    // FETCH_SECRET and MEMORY_SECRET are required (no SEARCH_SECRET fallback).
     if (req.method !== "POST") return err("Method not allowed", 405);
 
     const providedHeader = req.headers.get("X-Search-Secret") ?? "";
     const configured = secretForPath(url.pathname, env);
-    if (!(await secretsMatch(providedHeader, configured))) {
+    if (!configured || !(await secretsMatch(providedHeader, configured))) {
       return err("Unauthorized", 401);
     }
 
@@ -165,42 +163,49 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
   if (url.length === 0) return err("url is required");
   if (url.length > MAX_FETCH_URL_LENGTH) return err("url exceeds maximum length", 400);
 
-  // Pre-walk HTTP redirects (+ Refresh headers) in the Worker so Chromium never
-  // dials a Location we have not already DoH-validated. Browser intercept is the
-  // second line of defense for meta-refresh / unexpected document hops.
+  // Pre-walk redirects in the Worker (DoH + Location/Refresh). Then fetch the
+  // final HTML in the Worker and render via setContent so Chromium never dials
+  // the target (no meta-refresh / DNS-rebinding browser navigation).
   const targetUrl = await resolvePublicRedirectChain(url);
   if (!targetUrl) {
     return err("URL not allowed: must be a public http/https address", 400);
+  }
+  // Re-check immediately before the Worker GET (rebinding TOCTOU).
+  if (!(await isSsrfSafeResolved(targetUrl))) {
+    return err("URL not allowed: must be a public http/https address", 400);
+  }
+
+  let html: string;
+  try {
+    const upstream = await fetch(targetUrl, {
+      method: "GET",
+      redirect: "manual",
+      headers: { "User-Agent": "slate-search-fetch/1.0" },
+    });
+    if (upstream.status >= 300 && upstream.status < 400) {
+      return err("URL not allowed: unexpected redirect", 400);
+    }
+    if (!upstream.ok) return err("Fetch upstream error", 502);
+    const ctype = (upstream.headers.get("content-type") || "").toLowerCase();
+    if (ctype && !ctype.includes("html") && !ctype.includes("text/plain") && !ctype.includes("xml")) {
+      return err("URL not allowed: unsupported content type", 400);
+    }
+    html = await upstream.text();
+  } catch (e: unknown) {
+    console.error("worker fetch failed:", e instanceof Error ? e.message : String(e));
+    return err("Fetch upstream error", 502);
   }
 
   const browser = await puppeteer.launch(env.BROWSER);
   try {
     const page = await browser.newPage();
-    // Kill inline JS navigations / XHR SSRF side-channels; we only need static DOM text.
     await page.setJavaScriptEnabled(false);
     await page.setRequestInterception(true);
-    // Async listener is awaited by Puppeteer before the request proceeds -- do not
-    // fire-and-forget; abort/continue must settle before Chromium dials out.
+    // Deny all network from the renderer -- content is already in-process.
     page.on("request", async (r) => {
-      let settled = false;
-      const settle = async (action: "abort" | "continue"): Promise<void> => {
-        if (settled) return;
-        settled = true;
-        if (action === "abort") await r.abort();
-        else await r.continue();
-      };
-      try {
-        if (await shouldAbortBrowserRequestResolved(r.url(), r.resourceType())) {
-          await settle("abort");
-        } else {
-          await settle("continue");
-        }
-      } catch {
-        try { await settle("abort"); } catch { /* already handled / closed */ }
-      }
+      try { await r.abort(); } catch { /* ignore */ }
     });
-    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
-    // Strip meta-refresh before Chromium can navigate away from the validated URL.
+    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 25_000 });
     await page.evaluate(() => {
       for (const el of document.querySelectorAll("meta[http-equiv]")) {
         if ((el.getAttribute("http-equiv") || "").toLowerCase() === "refresh") {
@@ -208,12 +213,6 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
         }
       }
     });
-    // Brief settle so any already-queued refresh attempt surfaces in page.url().
-    await new Promise((r) => setTimeout(r, 300));
-    const finalUrl = page.url();
-    if (!(await isSsrfSafeResolved(finalUrl))) {
-      return err("URL not allowed: navigation landed on a non-public address", 400);
-    }
     const { title, content } = await page.evaluate(() => {
       ["script", "style", "nav", "header", "footer", "aside", "noscript"]
         .forEach(tag => document.querySelectorAll(tag).forEach(el => el.remove()));
@@ -222,9 +221,9 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
         content: (document.body?.innerText ?? "").replace(/\s{3,}/g, "\n\n").trim().slice(0, 10_000),
       };
     });
-    return json({ url: finalUrl, title, content });
+    return json({ url: targetUrl, title, content });
   } catch (e: unknown) {
-    console.error("browser fetch failed:", e instanceof Error ? e.message : String(e));
+    console.error("browser render failed:", e instanceof Error ? e.message : String(e));
     return err("Browser fetch failed", 500);
   } finally {
     await browser.close();
