@@ -692,6 +692,20 @@ function searchHeaders(secret) {
   return { 'Content-Type': 'application/json', 'X-Search-Secret': secret };
 }
 
+/** Bot-side precheck before calling /fetch (Worker still runs full SSRF/DoH). */
+function isFetchUrlAllowed(raw) {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return false;
+  let u;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+  if (u.username || u.password) return false;
+  const h = u.hostname.toLowerCase();
+  if (!h || h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0') return false;
+  if (/^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h)) return false;
+  if (h === '::1' || h.startsWith('[') || h.includes(':')) return false; // reject raw IPv6 literals
+  return true;
+}
+
 async function executeTool(name, input) {
   // Per-capability secrets: do not require SEARCH_SECRET for fetch/memory tools.
   if (!CFG.searchUrl) return 'Search not configured.';
@@ -711,6 +725,7 @@ async function executeTool(name, input) {
   if (name === 'fetch_page') {
     // Uses process.env.FETCH_SECRET via CFG.fetchSecret only -- never SEARCH_SECRET.
     if (!CFG.fetchSecret) return 'Fetch not configured.';
+    if (!isFetchUrlAllowed(input.url)) return 'Fetch URL rejected (must be http(s) public host).';
     log(`[search] fetch: ${input.url}`);
     const res = await fetch(`${CFG.searchUrl}/fetch`, {
       method: 'POST',
