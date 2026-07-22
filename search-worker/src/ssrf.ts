@@ -3,12 +3,22 @@
 // Sync checks cover scheme + literal / reserved hosts. Async checks resolve the
 // hostname via Cloudflare DNS-over-HTTPS and reject if ANY answer is private /
 // link-local / metadata (DNS-rebinding). Fail closed on DNS errors or empty answers.
+//
+// Browser policy: only main-frame `document` navigations are allowed (redirect hops
+// included). Scripts/XHR/etc. are aborted so in-page JS cannot open a second SSRF path.
 
 export type DnsLookup = (hostname: string) => Promise<string[]>;
 
-const BLOCKED_RESOURCE_TYPES = new Set(["image", "stylesheet", "font", "media"]);
+/** Only main-document navigations (and their HTTP redirect hops) may proceed. */
+export const ALLOWED_BROWSER_RESOURCE_TYPES = new Set(["document"]);
+
+export const MAX_FETCH_URL_LENGTH = 2048;
 
 const DOH_ENDPOINT = "https://cloudflare-dns.com/dns-query";
+const DOH_TYPE_A = 1;
+const DOH_TYPE_NS = 2;
+const DOH_TYPE_CNAME = 5;
+const DOH_TYPE_AAAA = 28;
 
 /** True when `ip` is loopback, private, link-local, CGNAT, metadata, or reserved. */
 export function isBlockedIp(ip: string): boolean {
@@ -71,11 +81,20 @@ function isIpLiteralHostname(host: string): boolean {
   return false;
 }
 
+export function isReservedHostname(host: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, "");
+  return h === "localhost" || h.endsWith(".internal") || h.endsWith(".local");
+}
+
 /**
  * Sync URL-shape SSRF check. Allows public hostnames without resolving them
  * (use `isSsrfSafeResolved` before any network hop).
  */
 export function isSsrfSafe(raw: string): boolean {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_FETCH_URL_LENGTH) {
+    return false;
+  }
+
   let parsed: URL;
   try {
     parsed = new URL(raw);
@@ -87,9 +106,7 @@ export function isSsrfSafe(raw: string): boolean {
 
   const host = parsed.hostname.toLowerCase();
   if (host.length === 0) return false;
-  if (host === "localhost" || host.endsWith(".internal") || host.endsWith(".local")) {
-    return false;
-  }
+  if (isReservedHostname(host)) return false;
 
   if (isIpLiteralHostname(host)) {
     return !isBlockedIp(host);
@@ -103,7 +120,15 @@ interface DohAnswer {
   data: string;
 }
 
-/** Resolve A + AAAA via Cloudflare DoH JSON. Throws on transport / HTTP failure. */
+function cnameTargetHostname(data: string): string {
+  return data.toLowerCase().replace(/\.$/, "");
+}
+
+/**
+ * Resolve A + AAAA via Cloudflare DoH JSON. Also inspects CNAME answers in the
+ * response: reserved / IP-literal CNAME targets fail the lookup (throw) so the
+ * caller fails closed. Throws on transport / HTTP failure.
+ */
 export async function lookupDnsJson(
   hostname: string,
   fetchImpl: typeof fetch = fetch,
@@ -119,8 +144,20 @@ export async function lookupDnsJson(
       throw new Error(`DoH ${type} failed: ${res.status}`);
     }
     const body = (await res.json()) as { Answer?: DohAnswer[] };
-    const want = type === "A" ? 1 : 28;
+    const want = type === "A" ? DOH_TYPE_A : DOH_TYPE_AAAA;
     for (const ans of body.Answer ?? []) {
+      if (ans.type === DOH_TYPE_CNAME && typeof ans.data === "string") {
+        const target = cnameTargetHostname(ans.data);
+        if (isReservedHostname(target)) {
+          throw new Error(`DoH CNAME to reserved host: ${target}`);
+        }
+        if (isIpLiteralHostname(target) && isBlockedIp(target)) {
+          throw new Error(`DoH CNAME to blocked IP: ${target}`);
+        }
+        continue;
+      }
+      // Ignore NS glue etc.
+      if (ans.type === DOH_TYPE_NS) continue;
       if (ans.type === want && typeof ans.data === "string" && ans.data.length > 0) {
         ips.push(ans.data);
       }
@@ -131,13 +168,14 @@ export async function lookupDnsJson(
 
 export interface SsrfResolveOpts {
   lookup?: DnsLookup;
-  /** Per-request hostname -> IPs cache (avoids DoH spam across redirect hops). */
-  cache?: Map<string, string[]>;
 }
 
 /**
  * Full SSRF check including DNS resolution. Fail closed if lookup throws or
  * returns no addresses. Unsafe if any resolved address is blocked.
+ *
+ * Intentionally does NOT cache results across hops -- rebinding TOCTOU requires
+ * a fresh lookup immediately before each continue().
  */
 export async function isSsrfSafeResolved(
   raw: string,
@@ -160,13 +198,7 @@ export async function isSsrfSafeResolved(
   const lookup = opts.lookup ?? lookupDnsJson;
   let ips: string[];
   try {
-    const cached = opts.cache?.get(host);
-    if (cached) {
-      ips = cached;
-    } else {
-      ips = await lookup(host);
-      opts.cache?.set(host, ips);
-    }
+    ips = await lookup(host);
   } catch {
     return false;
   }
@@ -175,20 +207,22 @@ export async function isSsrfSafeResolved(
   return ips.every((ip) => !isBlockedIp(ip));
 }
 
-/** Sync abort decision (resource type + URL shape / literal IP). */
+/** Sync abort decision (non-document types + URL shape / literal IP). */
 export function shouldAbortBrowserRequest(rawUrl: string, resourceType: string): boolean {
-  return BLOCKED_RESOURCE_TYPES.has(resourceType) || !isSsrfSafe(rawUrl);
+  return !ALLOWED_BROWSER_RESOURCE_TYPES.has(resourceType) || !isSsrfSafe(rawUrl);
 }
 
 /**
- * Abort decision for intercepted browser requests, including DNS rebinding on
- * every hop (document navigations, XHR, and redirect targets).
+ * Abort decision for intercepted browser requests. Only `document` hops may
+ * proceed, and each hop re-resolves DNS immediately before continue.
  */
 export async function shouldAbortBrowserRequestResolved(
   rawUrl: string,
   resourceType: string,
   opts: SsrfResolveOpts = {},
 ): Promise<boolean> {
-  if (BLOCKED_RESOURCE_TYPES.has(resourceType)) return true;
+  if (!ALLOWED_BROWSER_RESOURCE_TYPES.has(resourceType)) return true;
+  // Sync reject first so private literals never wait on DoH.
+  if (!isSsrfSafe(rawUrl)) return true;
   return !(await isSsrfSafeResolved(rawUrl, opts));
 }

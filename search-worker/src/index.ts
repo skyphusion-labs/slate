@@ -16,7 +16,11 @@
 // into) another channel's search results or the shared knowledge base; same embedding model + shape.
 
 import puppeteer from "@cloudflare/puppeteer";
-import { isSsrfSafeResolved, shouldAbortBrowserRequestResolved } from "./ssrf";
+import {
+  isSsrfSafeResolved,
+  MAX_FETCH_URL_LENGTH,
+  shouldAbortBrowserRequestResolved,
+} from "./ssrf";
 
 interface Env {
   BROWSER: Fetcher;
@@ -65,8 +69,9 @@ export default {
     if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
     if (req.method === "GET" && url.pathname === "/health") return json({ ok: true });
 
-    const secret = req.headers.get("X-Search-Secret");
-    if (!secret || secret !== env.SEARCH_SECRET) return err("Unauthorized", 401);
+    // Auth is the Wrangler secret env.SEARCH_SECRET only -- never a source literal.
+    const providedHeader = req.headers.get("X-Search-Secret");
+    if (!providedHeader || providedHeader !== env.SEARCH_SECRET) return err("Unauthorized", 401);
     if (req.method !== "POST") return err("Method not allowed", 405);
 
     if (url.pathname === "/search")           return handleSearch(req, env);
@@ -119,35 +124,37 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
 
 async function handleFetch(req: Request, env: Env): Promise<Response> {
   const { url } = await req.json() as { url: string };
-  if (!url) return err("url is required");
+  if (typeof url !== "string" || url.length === 0) return err("url is required");
+  if (url.length > MAX_FETCH_URL_LENGTH) return err("url exceeds maximum length", 400);
 
-  // Per-navigation DNS cache: every intercepted hop (including 30x redirects) re-checks
-  // the request URL and resolves the hostname so public names cannot rebind to metadata.
-  const dnsCache = new Map<string, string[]>();
-  if (!(await isSsrfSafeResolved(url, { cache: dnsCache }))) {
+  // Fresh DoH before launch; every intercepted document hop re-resolves (no DNS cache)
+  // so a public name cannot rebind to metadata between check and continue.
+  if (!(await isSsrfSafeResolved(url))) {
     return err("URL not allowed: must be a public http/https address", 400);
   }
 
   const browser = await puppeteer.launch(env.BROWSER);
   try {
     const page = await browser.newPage();
+    // Kill inline JS navigations / XHR SSRF side-channels; we only need static DOM text.
+    await page.setJavaScriptEnabled(false);
     await page.setRequestInterception(true);
-    page.on("request", (r) => {
-      void (async () => {
-        try {
-          if (await shouldAbortBrowserRequestResolved(r.url(), r.resourceType(), { cache: dnsCache })) {
-            await r.abort();
-          } else {
-            await r.continue();
-          }
-        } catch {
-          try { await r.abort(); } catch { /* already handled / closed */ }
+    // Async listener is awaited by Puppeteer before the request proceeds -- do not
+    // fire-and-forget; abort/continue must settle before Chromium dials out.
+    page.on("request", async (r) => {
+      try {
+        if (await shouldAbortBrowserRequestResolved(r.url(), r.resourceType())) {
+          await r.abort();
+        } else {
+          await r.continue();
         }
-      })();
+      } catch {
+        try { await r.abort(); } catch { /* already handled / closed */ }
+      }
     });
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25_000 });
     const finalUrl = page.url();
-    if (!(await isSsrfSafeResolved(finalUrl, { cache: dnsCache }))) {
+    if (!(await isSsrfSafeResolved(finalUrl))) {
       return err("URL not allowed: navigation landed on a non-public address", 400);
     }
     const { title, content } = await page.evaluate(() => {

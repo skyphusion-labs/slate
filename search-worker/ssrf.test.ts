@@ -3,13 +3,14 @@ import {
   isBlockedIp,
   isSsrfSafe,
   isSsrfSafeResolved,
+  MAX_FETCH_URL_LENGTH,
   shouldAbortBrowserRequest,
   shouldAbortBrowserRequestResolved,
   type DnsLookup,
 } from "./src/ssrf";
 
 describe("search-worker SSRF filtering", () => {
-  it("allows public http and https URLs (sync shape)", () => {
+  it("allows public http and https document URLs (sync shape)", () => {
     expect(isSsrfSafe("https://example.com/page")).toBe(true);
     expect(shouldAbortBrowserRequest("https://example.com/page", "document")).toBe(false);
   });
@@ -29,9 +30,17 @@ describe("search-worker SSRF filtering", () => {
     }
   });
 
-  it("still blocks high-volume subresources from public hosts", () => {
+  it("aborts every non-document resource type (script/xhr/css included)", () => {
+    expect(shouldAbortBrowserRequest("https://example.com/app.js", "script")).toBe(true);
+    expect(shouldAbortBrowserRequest("https://example.com/api", "xhr")).toBe(true);
+    expect(shouldAbortBrowserRequest("https://example.com/api", "fetch")).toBe(true);
     expect(shouldAbortBrowserRequest("https://example.com/image.jpg", "image")).toBe(true);
     expect(shouldAbortBrowserRequest("https://example.com/app.css", "stylesheet")).toBe(true);
+  });
+
+  it("rejects oversized URLs", () => {
+    const huge = `https://example.com/${"a".repeat(MAX_FETCH_URL_LENGTH)}`;
+    expect(isSsrfSafe(huge)).toBe(false);
   });
 
   it("decodes IPv4-mapped IPv6 metadata / loopback as blocked", () => {
@@ -75,23 +84,24 @@ describe("search-worker SSRF filtering", () => {
     ).toBe(false);
   });
 
-  it("re-checks redirect hop URLs with DNS before allowing continue", async () => {
-    const cache = new Map<string, string[]>();
+  it("re-resolves redirect hop URLs with DNS before allowing continue (no cache)", async () => {
+    let calls = 0;
     const lookup: DnsLookup = async (hostname) => {
+      calls += 1;
       if (hostname === "public.example") return ["93.184.216.34"];
       if (hostname === "evil.example") return ["169.254.169.254"];
       return [];
     };
     expect(
-      await shouldAbortBrowserRequestResolved("https://public.example/", "document", {
-        lookup,
-        cache,
-      }),
+      await shouldAbortBrowserRequestResolved("https://public.example/", "document", { lookup }),
     ).toBe(false);
+    expect(
+      await shouldAbortBrowserRequestResolved("https://public.example/next", "document", { lookup }),
+    ).toBe(false);
+    expect(calls).toBe(2);
     expect(
       await shouldAbortBrowserRequestResolved("https://evil.example/latest/meta-data/", "document", {
         lookup,
-        cache,
       }),
     ).toBe(true);
   });
