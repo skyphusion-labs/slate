@@ -6,8 +6,8 @@
 //   POST /fetch   { url }
 //   POST /knowledge/index   { content, title?, author? }
 //   POST /knowledge/search  { query, topK?: number }
-//   POST /memory/index   { content, kind, channelId?, meta? }
-//   POST /memory/search  { query, channelId?, topK?: number }
+//   POST /memory/index   { content, kind, channelId, meta? }   // channelId required
+//   POST /memory/search  { query, channelId, topK?: number }   // channelId required
 //
 // `knowledge/*` is the manual, cross-channel `!learn` corpus (film references a user explicitly
 // submits). `memory/*` (slate#90) is Slate's own auto-ingested session memory -- conversation turns,
@@ -46,16 +46,13 @@ interface TavilyResult {
   score?: number;
 }
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Search-Secret",
-};
+// No CORS: slate-search is called only by the Discord bot (server-side). Browser
+// origins must not be able to attach X-Search-Secret via a malicious page.
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
@@ -63,16 +60,29 @@ function err(msg: string, status = 400): Response {
   return json({ error: msg }, status);
 }
 
+function isNonEmptyChannelId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 64;
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
 
-    if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+    if (req.method === "OPTIONS") return err("Method not allowed", 405);
     if (req.method === "GET" && url.pathname === "/health") return json({ ok: true });
 
     // Auth is the Wrangler secret env.SEARCH_SECRET only -- never a source literal.
+    // Single shared secret is intentional (one Discord bot caller); rotate via wrangler
+    // if leaked. Per-caller identity is out of scope for this Worker.
     const providedHeader = req.headers.get("X-Search-Secret");
-    if (!providedHeader || providedHeader !== env.SEARCH_SECRET) return err("Unauthorized", 401);
+    if (
+      !env.SEARCH_SECRET ||
+      env.SEARCH_SECRET.length < 16 ||
+      !providedHeader ||
+      providedHeader !== env.SEARCH_SECRET
+    ) {
+      return err("Unauthorized", 401);
+    }
     if (req.method !== "POST") return err("Method not allowed", 405);
 
     if (url.pathname === "/search")           return handleSearch(req, env);
@@ -145,14 +155,21 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
     // Async listener is awaited by Puppeteer before the request proceeds -- do not
     // fire-and-forget; abort/continue must settle before Chromium dials out.
     page.on("request", async (r) => {
+      let settled = false;
+      const settle = async (action: "abort" | "continue"): Promise<void> => {
+        if (settled) return;
+        settled = true;
+        if (action === "abort") await r.abort();
+        else await r.continue();
+      };
       try {
         if (await shouldAbortBrowserRequestResolved(r.url(), r.resourceType())) {
-          await r.abort();
+          await settle("abort");
         } else {
-          await r.continue();
+          await settle("continue");
         }
       } catch {
-        try { await r.abort(); } catch { /* already handled / closed */ }
+        try { await settle("abort"); } catch { /* already handled / closed */ }
       }
     });
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
@@ -234,12 +251,23 @@ async function handleKnowledgeSearch(req: Request, env: Env): Promise<Response> 
 // ---------------------------------------------------------------------------
 
 async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
-  const { content, kind = "chat", channelId = "", meta = {} } = await req.json() as {
-    content: string; kind?: string; channelId?: string; meta?: Record<string, string>;
+  const body = await req.json() as {
+    content?: unknown; kind?: unknown; channelId?: unknown; meta?: unknown;
   };
-  if (!content) return err("content is required");
+  if (typeof body.content !== "string" || body.content.length === 0) {
+    return err("content is required");
+  }
+  if (!isNonEmptyChannelId(body.channelId)) {
+    return err("channelId is required (non-empty string)", 400);
+  }
+  const channelId = body.channelId.trim();
+  const kind = typeof body.kind === "string" ? body.kind : "chat";
+  const meta =
+    body.meta && typeof body.meta === "object" && !Array.isArray(body.meta)
+      ? body.meta as Record<string, string>
+      : {};
 
-  const vector = await embed(env, content.slice(0, 4_000));
+  const vector = await embed(env, body.content.slice(0, 4_000));
   const id = crypto.randomUUID();
 
   await env.MEMORY.upsert([{
@@ -247,8 +275,8 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
     values: vector,
     metadata: {
       kind:      String(kind).slice(0, 40),
-      channelId: channelId.slice(0, 64),
-      content:   content.slice(0, 2_000),
+      channelId,
+      content:   body.content.slice(0, 2_000),
       createdAt: new Date().toISOString(),
       ...Object.fromEntries(Object.entries(meta).slice(0, 10).map(([k, v]) => [k.slice(0, 40), String(v).slice(0, 200)])),
     },
@@ -258,14 +286,21 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleMemorySearch(req: Request, env: Env): Promise<Response> {
-  const { query, channelId, topK = 5 } = await req.json() as { query: string; channelId?: string; topK?: number };
-  if (!query) return err("query is required");
+  const body = await req.json() as { query?: unknown; channelId?: unknown; topK?: unknown };
+  if (typeof body.query !== "string" || body.query.length === 0) {
+    return err("query is required");
+  }
+  if (!isNonEmptyChannelId(body.channelId)) {
+    return err("channelId is required (non-empty string)", 400);
+  }
+  const channelId = body.channelId.trim();
+  const topK = typeof body.topK === "number" && Number.isFinite(body.topK) ? body.topK : 5;
 
-  const vector  = await embed(env, query);
+  const vector  = await embed(env, body.query);
   const results = await env.MEMORY.query(vector, {
     topK:           Math.min(topK, 10),
     returnMetadata: "all",
-    ...(channelId ? { filter: { channelId } } : {}),
+    filter:         { channelId },
   });
 
   return json({

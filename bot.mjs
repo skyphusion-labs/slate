@@ -509,12 +509,13 @@ async function logTraffic({ channelId, method, path, status, ok, requestSummary,
 // Auto-ingest into the session-memory Vectorize index (slate-search /memory/index). Fire-and-forget
 // from every call site -- never awaited inline with the user-facing action, never throws.
 async function indexMemory(channelId, kind, content, meta = {}) {
-  if (!CFG.searchUrl || !CFG.searchSecret || !content) return;
+  // channelId is required by slate-search (cross-channel memory isolation).
+  if (!CFG.searchUrl || !CFG.searchSecret || !content || !channelId) return;
   try {
     await fetch(`${CFG.searchUrl}/memory/index`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.searchSecret },
-      body:    JSON.stringify({ content: content.slice(0, 4000), kind, channelId: channelId ?? '', meta }),
+      body:    JSON.stringify({ content: content.slice(0, 4000), kind, channelId, meta }),
     });
   } catch (e) {
     log(`ERROR indexing memory (${kind}) for ${channelId}: ${e.message}`);
@@ -690,6 +691,7 @@ async function executeTool(name, input) {
   }
   if (name === 'search_memory') {
     const channelId = currentChannelId();
+    if (!channelId) return 'Memory search requires an active Discord channel.';
     log(`[search] memory: ${input.query} (channel ${channelId})`);
     const res = await fetch(`${CFG.searchUrl}/memory/search`, { method: 'POST', headers, body: JSON.stringify({ query: input.query, channelId }) });
     return res.ok ? res.json() : `Memory search error: ${res.status}`;
