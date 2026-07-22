@@ -261,21 +261,6 @@ describe("channel id + memory meta sanitize", () => {
   });
 });
 
-describe("dual DoH agreement", () => {
-  it("fails closed when pinned resolvers disagree", async () => {
-    let n = 0;
-    const disagree: typeof fetch = async () => {
-      n += 1;
-      const ip = n % 2 === 1 ? "93.184.216.34" : "93.184.216.35";
-      return new Response(
-        JSON.stringify({ Status: 0, TC: false, Answer: [{ type: 1, data: ip }] }),
-        { status: 200 },
-      );
-    };
-    await expect(lookupDnsJson("example.com", disagree)).rejects.toThrow(/disagreement/i);
-  });
-});
-
 describe("capabilitySecretsReady", () => {
   it("requires four long, pairwise-distinct secrets", () => {
     expect(

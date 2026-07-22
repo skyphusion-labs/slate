@@ -692,8 +692,8 @@ function searchHeaders(secret) {
   return { 'Content-Type': 'application/json', 'X-Search-Secret': secret };
 }
 
-/** Bot-side precheck before calling /fetch (Worker still runs full SSRF/DoH).
- *  Hostnames only — no IP literals (v4/v6). Trailing dots stripped. */
+/** Defense-in-depth shape check only. The Worker /fetch path is authoritative
+ *  (DoH + redirect pre-walk + offline setContent). Hostnames only — no IP literals. */
 function isFetchUrlAllowed(raw) {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return false;
   let u;
