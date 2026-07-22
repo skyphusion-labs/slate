@@ -1,11 +1,14 @@
 // SSRF guards for /fetch (CF Browser Rendering).
 //
-// Sync checks cover scheme + literal / reserved hosts. Async checks resolve the
-// hostname via Cloudflare DNS-over-HTTPS and reject if ANY answer is private /
-// link-local / metadata (DNS-rebinding). Fail closed on DNS errors or empty answers.
+// Sync checks cover scheme + literal / reserved hosts + embedded credentials.
+// Async checks resolve via Cloudflare DNS-over-HTTPS (including CNAME targets)
+// and reject if ANY answer is private / link-local / metadata. Fail closed on
+// DNS errors or empty answers.
 //
-// Browser policy: only main-frame `document` navigations are allowed (redirect hops
-// included). Scripts/XHR/etc. are aborted so in-page JS cannot open a second SSRF path.
+// Browser policy: only main-frame `document` navigations are allowed (redirect
+// hops included). Scripts/XHR/etc. are aborted so in-page JS cannot open a
+// second SSRF path. Callers should also pre-walk HTTP redirects with
+// `resolvePublicRedirectChain` before launching the browser.
 
 export type DnsLookup = (hostname: string) => Promise<string[]>;
 
@@ -13,6 +16,8 @@ export type DnsLookup = (hostname: string) => Promise<string[]>;
 export const ALLOWED_BROWSER_RESOURCE_TYPES = new Set(["document"]);
 
 export const MAX_FETCH_URL_LENGTH = 2048;
+export const MAX_REDIRECT_HOPS = 5;
+const MAX_CNAME_DEPTH = 4;
 
 const DOH_ENDPOINT = "https://cloudflare-dns.com/dns-query";
 const DOH_TYPE_A = 1;
@@ -48,7 +53,11 @@ export function isBlockedIp(ip: string): boolean {
 function isBlockedIpv4(ip: string): boolean {
   const m = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (!m) return true;
-  const [a, b] = [+m[1], +m[2]];
+  const octets = m.slice(1).map((x) => Number(x));
+  // Reject non-decimal / out-of-range forms the regex still matched (leading zeros
+  // are fine as decimal; WHATWG already canonicalizes octal/hex before hostname).
+  if (octets.some((n) => n > 255)) return true;
+  const [a, b] = octets;
   return (
     a === 0 || // 0/8 unspecified
     a === 10 || // 10/8 RFC1918
@@ -102,7 +111,11 @@ export function isSsrfSafe(raw: string): boolean {
     return false;
   }
 
+  // Explicit allow-list: http/https only (blocks data:, file:, ftp:, javascript:, ...).
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+
+  // user:pass@host can confuse parsers / logs; never accept credentials in the URL.
+  if (parsed.username !== "" || parsed.password !== "") return false;
 
   const host = parsed.hostname.toLowerCase();
   if (host.length === 0) return false;
@@ -124,45 +137,68 @@ function cnameTargetHostname(data: string): string {
   return data.toLowerCase().replace(/\.$/, "");
 }
 
+async function dohQuery(
+  hostname: string,
+  type: "A" | "AAAA",
+  fetchImpl: typeof fetch,
+): Promise<DohAnswer[]> {
+  const url = `${DOH_ENDPOINT}?name=${encodeURIComponent(hostname)}&type=${type}`;
+  const res = await fetchImpl(url, {
+    headers: { Accept: "application/dns-json" },
+  });
+  if (!res.ok) {
+    throw new Error(`DoH ${type} failed: ${res.status}`);
+  }
+  const body = (await res.json()) as { Answer?: DohAnswer[] };
+  return body.Answer ?? [];
+}
+
 /**
- * Resolve A + AAAA via Cloudflare DoH JSON. Also inspects CNAME answers in the
- * response: reserved / IP-literal CNAME targets fail the lookup (throw) so the
- * caller fails closed. Throws on transport / HTTP failure.
+ * Resolve A + AAAA via Cloudflare DoH JSON. Recurses into CNAME targets (bounded)
+ * and unions their addresses so a public A + private CNAME chain cannot sneak past.
+ * Throws on transport failure, reserved CNAME targets, or excessive CNAME depth.
  */
 export async function lookupDnsJson(
   hostname: string,
   fetchImpl: typeof fetch = fetch,
+  depth = 0,
 ): Promise<string[]> {
+  if (depth > MAX_CNAME_DEPTH) {
+    throw new Error("DoH CNAME chain too deep");
+  }
+
   const ips: string[] = [];
+  const cnames = new Set<string>();
+
   for (const type of ["A", "AAAA"] as const) {
-    const url =
-      `${DOH_ENDPOINT}?name=${encodeURIComponent(hostname)}&type=${type}`;
-    const res = await fetchImpl(url, {
-      headers: { Accept: "application/dns-json" },
-    });
-    if (!res.ok) {
-      throw new Error(`DoH ${type} failed: ${res.status}`);
-    }
-    const body = (await res.json()) as { Answer?: DohAnswer[] };
     const want = type === "A" ? DOH_TYPE_A : DOH_TYPE_AAAA;
-    for (const ans of body.Answer ?? []) {
+    for (const ans of await dohQuery(hostname, type, fetchImpl)) {
       if (ans.type === DOH_TYPE_CNAME && typeof ans.data === "string") {
-        const target = cnameTargetHostname(ans.data);
-        if (isReservedHostname(target)) {
-          throw new Error(`DoH CNAME to reserved host: ${target}`);
-        }
-        if (isIpLiteralHostname(target) && isBlockedIp(target)) {
-          throw new Error(`DoH CNAME to blocked IP: ${target}`);
-        }
+        cnames.add(cnameTargetHostname(ans.data));
         continue;
       }
-      // Ignore NS glue etc.
       if (ans.type === DOH_TYPE_NS) continue;
       if (ans.type === want && typeof ans.data === "string" && ans.data.length > 0) {
         ips.push(ans.data);
       }
     }
   }
+
+  for (const target of cnames) {
+    if (isReservedHostname(target)) {
+      throw new Error(`DoH CNAME to reserved host: ${target}`);
+    }
+    if (isIpLiteralHostname(target)) {
+      if (isBlockedIp(target)) {
+        throw new Error(`DoH CNAME to blocked IP: ${target}`);
+      }
+      ips.push(target.replace(/^\[|\]$/g, ""));
+      continue;
+    }
+    const nested = await lookupDnsJson(target, fetchImpl, depth + 1);
+    ips.push(...nested);
+  }
+
   return ips;
 }
 
@@ -195,7 +231,7 @@ export async function isSsrfSafeResolved(
     return !isBlockedIp(host);
   }
 
-  const lookup = opts.lookup ?? lookupDnsJson;
+  const lookup = opts.lookup ?? ((h: string) => lookupDnsJson(h));
   let ips: string[];
   try {
     ips = await lookup(host);
@@ -225,4 +261,62 @@ export async function shouldAbortBrowserRequestResolved(
   // Sync reject first so private literals never wait on DoH.
   if (!isSsrfSafe(rawUrl)) return true;
   return !(await isSsrfSafeResolved(rawUrl, opts));
+}
+
+export type RedirectFetch = (input: string, init: RequestInit) => Promise<Response>;
+
+/**
+ * Walk HTTP 3xx Location hops with redirect:manual, validating every URL with
+ * DoH before requesting it. Returns the first non-redirect URL (or the last
+ * hop if the chain ends without a Location). Throws / returns null on unsafe.
+ */
+export async function resolvePublicRedirectChain(
+  startUrl: string,
+  opts: {
+    lookup?: DnsLookup;
+    fetchImpl?: RedirectFetch;
+    maxHops?: number;
+  } = {},
+): Promise<string | null> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const maxHops = opts.maxHops ?? MAX_REDIRECT_HOPS;
+  let current = startUrl;
+
+  for (let hop = 0; hop <= maxHops; hop++) {
+    if (!(await isSsrfSafeResolved(current, { lookup: opts.lookup }))) {
+      return null;
+    }
+    if (hop === maxHops) {
+      // Validated current but out of hops to follow further -- refuse rather than
+      // hand an unresolved chain to the browser.
+      return null;
+    }
+
+    let res: Response;
+    try {
+      res = await fetchImpl(current, {
+        method: "GET",
+        redirect: "manual",
+        headers: { "User-Agent": "slate-search-ssrf-prewalk/1.0" },
+      });
+    } catch {
+      return null;
+    }
+
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("Location");
+      if (!loc) return null;
+      try {
+        current = new URL(loc, current).href;
+      } catch {
+        return null;
+      }
+      continue;
+    }
+
+    // Non-redirect response: this is the document URL the browser may load.
+    return current;
+  }
+
+  return null;
 }

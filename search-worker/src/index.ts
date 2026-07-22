@@ -19,6 +19,7 @@ import puppeteer from "@cloudflare/puppeteer";
 import {
   isSsrfSafeResolved,
   MAX_FETCH_URL_LENGTH,
+  resolvePublicRedirectChain,
   shouldAbortBrowserRequestResolved,
 } from "./ssrf";
 
@@ -127,9 +128,11 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
   if (typeof url !== "string" || url.length === 0) return err("url is required");
   if (url.length > MAX_FETCH_URL_LENGTH) return err("url exceeds maximum length", 400);
 
-  // Fresh DoH before launch; every intercepted document hop re-resolves (no DNS cache)
-  // so a public name cannot rebind to metadata between check and continue.
-  if (!(await isSsrfSafeResolved(url))) {
+  // Pre-walk HTTP redirects in the Worker (redirect:manual) so Chromium never
+  // dials a Location we have not already DoH-validated. Browser intercept is the
+  // second line of defense for meta-refresh / unexpected document hops.
+  const targetUrl = await resolvePublicRedirectChain(url);
+  if (!targetUrl) {
     return err("URL not allowed: must be a public http/https address", 400);
   }
 
@@ -152,7 +155,7 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
         try { await r.abort(); } catch { /* already handled / closed */ }
       }
     });
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25_000 });
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
     const finalUrl = page.url();
     if (!(await isSsrfSafeResolved(finalUrl))) {
       return err("URL not allowed: navigation landed on a non-public address", 400);
@@ -167,7 +170,8 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
     });
     return json({ url: finalUrl, title, content });
   } catch (e: unknown) {
-    return err(`Browser fetch failed: ${e instanceof Error ? e.message : String(e)}`, 500);
+    console.error("browser fetch failed:", e instanceof Error ? e.message : String(e));
+    return err("Browser fetch failed", 500);
   } finally {
     await browser.close();
   }

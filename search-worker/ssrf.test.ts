@@ -4,6 +4,7 @@ import {
   isSsrfSafe,
   isSsrfSafeResolved,
   MAX_FETCH_URL_LENGTH,
+  resolvePublicRedirectChain,
   shouldAbortBrowserRequest,
   shouldAbortBrowserRequestResolved,
   type DnsLookup,
@@ -13,6 +14,14 @@ describe("search-worker SSRF filtering", () => {
   it("allows public http and https document URLs (sync shape)", () => {
     expect(isSsrfSafe("https://example.com/page")).toBe(true);
     expect(shouldAbortBrowserRequest("https://example.com/page", "document")).toBe(false);
+  });
+
+  it("rejects non-http(s) schemes and embedded credentials", () => {
+    expect(isSsrfSafe("data:text/html,hi")).toBe(false);
+    expect(isSsrfSafe("file:///etc/passwd")).toBe(false);
+    expect(isSsrfSafe("ftp://example.com/a")).toBe(false);
+    expect(isSsrfSafe("https://user:pass@example.com/")).toBe(false);
+    expect(isSsrfSafe("https://user@example.com/")).toBe(false);
   });
 
   it("blocks redirect-chain document requests to private and metadata hosts", () => {
@@ -104,5 +113,40 @@ describe("search-worker SSRF filtering", () => {
         lookup,
       }),
     ).toBe(true);
+  });
+
+  it("pre-walks HTTP redirects and refuses a chain that lands on metadata", async () => {
+    const lookup: DnsLookup = async (hostname) => {
+      if (hostname === "public.example") return ["93.184.216.34"];
+      return [];
+    };
+    const fetchImpl = async (input: string) => {
+      if (input === "https://public.example/start") {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "http://169.254.169.254/latest/meta-data/" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    };
+    expect(
+      await resolvePublicRedirectChain("https://public.example/start", { lookup, fetchImpl }),
+    ).toBeNull();
+  });
+
+  it("pre-walks HTTP redirects to the final public document URL", async () => {
+    const lookup: DnsLookup = async () => ["93.184.216.34"];
+    const fetchImpl = async (input: string) => {
+      if (input === "https://public.example/start") {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "https://public.example/final" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    };
+    expect(
+      await resolvePublicRedirectChain("https://public.example/start", { lookup, fetchImpl }),
+    ).toBe("https://public.example/final");
   });
 });
