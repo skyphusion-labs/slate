@@ -111,12 +111,22 @@ describe("search-worker SSRF filtering", () => {
     expect(
       await shouldAbortBrowserRequestResolved("https://public.example/next", "document", { lookup }),
     ).toBe(false);
-    expect(calls).toBe(2);
+    // Each hop double-resolves for rebinding stability.
+    expect(calls).toBe(4);
     expect(
       await shouldAbortBrowserRequestResolved("https://evil.example/latest/meta-data/", "document", {
         lookup,
       }),
     ).toBe(true);
+  });
+
+  it("rejects unstable DNS answers (rebinding between double-lookup)", async () => {
+    let n = 0;
+    const lookup: DnsLookup = async () => {
+      n += 1;
+      return n % 2 === 1 ? ["93.184.216.34"] : ["169.254.169.254"];
+    };
+    expect(await isSsrfSafeResolved("https://flip.example/", { lookup })).toBe(false);
   });
 
   it("rejects data/javascript Location targets when resolving redirects", () => {

@@ -13,16 +13,27 @@ export function isNonEmptyChannelId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 64;
 }
 
-export function timingSafeEqualString(a: string, b: string): boolean {
+/**
+ * Compare secrets without leaking configured length via early returns.
+ * Always SHA-256 both sides (fixed 32-byte compare), then require configured
+ * length >= 16 as part of the boolean result.
+ */
+export async function secretsMatch(
+  provided: string,
+  configured: string,
+  minLength = 16,
+): Promise<boolean> {
   const enc = new TextEncoder();
-  const aa = enc.encode(a);
-  const bb = enc.encode(b);
-  const len = Math.max(aa.length, bb.length);
-  let diff = aa.length === bb.length ? 0 : 1;
-  for (let i = 0; i < len; i++) {
-    diff |= (aa[i] ?? 0) ^ (bb[i] ?? 0);
-  }
-  return diff === 0;
+  const [aBuf, bBuf] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(provided)),
+    crypto.subtle.digest("SHA-256", enc.encode(configured)),
+  ]);
+  const a = new Uint8Array(aBuf);
+  const b = new Uint8Array(bBuf);
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
+  const longEnough = configured.length >= minLength ? 0 : 1;
+  return (diff | longEnough) === 0;
 }
 
 export function channelAllowed(allowlist: string | undefined, channelId: string): boolean {

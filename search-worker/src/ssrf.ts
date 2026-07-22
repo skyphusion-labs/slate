@@ -269,15 +269,22 @@ export async function isSsrfSafeResolved(
   }
 
   const lookup = opts.lookup ?? ((h: string) => lookupDnsJson(h));
-  let ips: string[];
+  // Double-resolve and require a stable answer set so a TTL=0 rebinding name
+  // that flips between the Worker DoH check and Chromium's dial is more likely
+  // to be caught (true IP pinning is unavailable in Browser Rendering).
+  let first: string[];
+  let second: string[];
   try {
-    ips = await lookup(host);
+    first = await lookup(host);
+    second = await lookup(host);
   } catch {
     return false;
   }
 
-  if (ips.length === 0) return false;
-  return ips.every((ip) => !isBlockedIp(ip));
+  if (first.length === 0 || second.length === 0) return false;
+  const norm = (ips: string[]) => [...new Set(ips)].sort().join("\0");
+  if (norm(first) !== norm(second)) return false;
+  return first.every((ip) => !isBlockedIp(ip));
 }
 
 /** Sync abort decision (non-document types + URL shape / literal IP). */

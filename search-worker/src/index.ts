@@ -21,7 +21,7 @@ import {
   isNonEmptyChannelId,
   MAX_KNOWLEDGE_CONTENT_LENGTH,
   sanitizeSearchQuery,
-  timingSafeEqualString,
+  secretsMatch,
 } from "./search-input";
 import {
   isSsrfSafeResolved,
@@ -81,11 +81,7 @@ export default {
     // if leaked. Optional MEMORY_CHANNEL_ALLOWLIST scopes memory to known channels.
     const providedHeader = req.headers.get("X-Search-Secret") ?? "";
     const configured = env.SEARCH_SECRET ?? "";
-    if (
-      configured.length < 16 ||
-      providedHeader.length < 16 ||
-      !timingSafeEqualString(providedHeader, configured)
-    ) {
+    if (!(await secretsMatch(providedHeader, configured))) {
       return err("Unauthorized", 401);
     }
     if (req.method !== "POST") return err("Method not allowed", 405);
