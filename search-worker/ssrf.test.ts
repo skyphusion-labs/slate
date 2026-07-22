@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { isSsrfSafe, shouldAbortBrowserRequest } from "./src/ssrf";
+import {
+  isBlockedIp,
+  isSsrfSafe,
+  isSsrfSafeResolved,
+  shouldAbortBrowserRequest,
+  shouldAbortBrowserRequestResolved,
+  type DnsLookup,
+} from "./src/ssrf";
 
 describe("search-worker SSRF filtering", () => {
-  it("allows public http and https URLs", () => {
+  it("allows public http and https URLs (sync shape)", () => {
     expect(isSsrfSafe("https://example.com/page")).toBe(true);
     expect(shouldAbortBrowserRequest("https://example.com/page", "document")).toBe(false);
   });
@@ -15,6 +22,8 @@ describe("search-worker SSRF filtering", () => {
       "http://192.168.1.1/",
       "http://[::1]/",
       "http://[fe80::1]/",
+      "http://[::ffff:169.254.169.254]/",
+      "http://[::ffff:a9fe:a9fe]/",
     ]) {
       expect(shouldAbortBrowserRequest(redirectedUrl, "document"), redirectedUrl).toBe(true);
     }
@@ -23,5 +32,67 @@ describe("search-worker SSRF filtering", () => {
   it("still blocks high-volume subresources from public hosts", () => {
     expect(shouldAbortBrowserRequest("https://example.com/image.jpg", "image")).toBe(true);
     expect(shouldAbortBrowserRequest("https://example.com/app.css", "stylesheet")).toBe(true);
+  });
+
+  it("decodes IPv4-mapped IPv6 metadata / loopback as blocked", () => {
+    expect(isBlockedIp("::ffff:169.254.169.254")).toBe(true);
+    expect(isBlockedIp("::ffff:a9fe:a9fe")).toBe(true);
+    expect(isBlockedIp("::ffff:7f00:1")).toBe(true);
+    expect(isBlockedIp("8.8.8.8")).toBe(false);
+  });
+
+  it("rejects DNS-rebinding hostnames that resolve to private/metadata IPs", async () => {
+    const lookup: DnsLookup = async () => ["169.254.169.254"];
+    expect(await isSsrfSafeResolved("https://rebind.example/meta", { lookup })).toBe(false);
+    expect(
+      await shouldAbortBrowserRequestResolved("https://rebind.example/meta", "document", { lookup }),
+    ).toBe(true);
+  });
+
+  it("rejects when any resolved address is private (multi-A rebinding)", async () => {
+    const lookup: DnsLookup = async () => ["93.184.216.34", "10.0.0.1"];
+    expect(await isSsrfSafeResolved("https://mixed.example/", { lookup })).toBe(false);
+  });
+
+  it("allows hostnames that resolve only to public addresses", async () => {
+    const lookup: DnsLookup = async () => ["93.184.216.34"];
+    expect(await isSsrfSafeResolved("https://example.com/page", { lookup })).toBe(true);
+    expect(
+      await shouldAbortBrowserRequestResolved("https://example.com/page", "document", { lookup }),
+    ).toBe(false);
+  });
+
+  it("fails closed when DNS returns no answers or throws", async () => {
+    expect(
+      await isSsrfSafeResolved("https://empty.example/", { lookup: async () => [] }),
+    ).toBe(false);
+    expect(
+      await isSsrfSafeResolved("https://fail.example/", {
+        lookup: async () => {
+          throw new Error("DoH down");
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("re-checks redirect hop URLs with DNS before allowing continue", async () => {
+    const cache = new Map<string, string[]>();
+    const lookup: DnsLookup = async (hostname) => {
+      if (hostname === "public.example") return ["93.184.216.34"];
+      if (hostname === "evil.example") return ["169.254.169.254"];
+      return [];
+    };
+    expect(
+      await shouldAbortBrowserRequestResolved("https://public.example/", "document", {
+        lookup,
+        cache,
+      }),
+    ).toBe(false);
+    expect(
+      await shouldAbortBrowserRequestResolved("https://evil.example/latest/meta-data/", "document", {
+        lookup,
+        cache,
+      }),
+    ).toBe(true);
   });
 });

@@ -1,53 +1,194 @@
-// Returns false for schemes other than http/https, and for hosts that map to
-// loopback, private, link-local, metadata, or mesh-internal addresses.
-// Covers literal IPs -- decimal/hex/short-form normalize to dotted-quad via the
-// WHATWG URL parser before our check -- and reserved names. Residual gap: DNS
-// rebinding (public name -> private A record) requires resolving the host first.
+// SSRF guards for /fetch (CF Browser Rendering).
+//
+// Sync checks cover scheme + literal / reserved hosts. Async checks resolve the
+// hostname via Cloudflare DNS-over-HTTPS and reject if ANY answer is private /
+// link-local / metadata (DNS-rebinding). Fail closed on DNS errors or empty answers.
+
+export type DnsLookup = (hostname: string) => Promise<string[]>;
+
+const BLOCKED_RESOURCE_TYPES = new Set(["image", "stylesheet", "font", "media"]);
+
+const DOH_ENDPOINT = "https://cloudflare-dns.com/dns-query";
+
+/** True when `ip` is loopback, private, link-local, CGNAT, metadata, or reserved. */
+export function isBlockedIp(ip: string): boolean {
+  const host = ip.toLowerCase().replace(/^\[|\]$/g, "");
+
+  const mappedV4 = ipv4FromMappedV6(host);
+  if (mappedV4) return isBlockedIpv4(mappedV4);
+
+  const v4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) return isBlockedIpv4(host);
+
+  // IPv6 literals (DoH returns without brackets).
+  if (
+    host === "::" ||
+    host === "::1" ||
+    host.startsWith("fe80:") ||
+    host.startsWith("fc") ||
+    host.startsWith("fd") ||
+    host.startsWith("::ffff:") // any IPv4-mapped form we failed to decode above
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isBlockedIpv4(ip: string): boolean {
+  const m = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return true;
+  const [a, b] = [+m[1], +m[2]];
+  return (
+    a === 0 || // 0/8 unspecified
+    a === 10 || // 10/8 RFC1918
+    a === 127 || // 127/8 loopback
+    (a === 100 && b >= 64 && b <= 127) || // 100.64/10 CGNAT / WARP mesh
+    (a === 169 && b === 254) || // 169.254/16 link-local + cloud metadata
+    (a === 172 && b >= 16 && b <= 31) || // 172.16/12 RFC1918
+    (a === 192 && b === 168) || // 192.168/16 RFC1918
+    (a === 198 && (b === 18 || b === 19)) || // 198.18/15 benchmark
+    a >= 240 // 240/4 reserved
+  );
+}
+
+/** Decode ::ffff:dotted or ::ffff:xxxx:yyyy into dotted-quad, else null. */
+function ipv4FromMappedV6(h6: string): string | null {
+  const dotted = h6.match(/^::ffff:(\d+)\.(\d+)\.(\d+)\.(\d+)$/i);
+  if (dotted) return `${dotted[1]}.${dotted[2]}.${dotted[3]}.${dotted[4]}`;
+  const hex = h6.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (!hex) return null;
+  const hi = Number.parseInt(hex[1], 16);
+  const lo = Number.parseInt(hex[2], 16);
+  return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+}
+
+function isIpLiteralHostname(host: string): boolean {
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return true;
+  if (host.startsWith("[") && host.endsWith("]")) return true;
+  // Bare IPv6 from DoH / some parsers (contains ':').
+  if (host.includes(":") && !host.includes(".")) return true;
+  return false;
+}
+
+/**
+ * Sync URL-shape SSRF check. Allows public hostnames without resolving them
+ * (use `isSsrfSafeResolved` before any network hop).
+ */
 export function isSsrfSafe(raw: string): boolean {
   let parsed: URL;
-  try { parsed = new URL(raw); } catch { return false; }
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
 
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
 
   const host = parsed.hostname.toLowerCase();
-
-  if (host === "localhost" || host.endsWith(".internal") || host.endsWith(".local")) return false;
-
-  const v4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (v4) {
-    const [a, b] = [+v4[1], +v4[2]];
-    if (
-      a === 0                              ||  // 0/8 unspecified
-      a === 10                             ||  // 10/8 RFC1918
-      a === 127                            ||  // 127/8 loopback
-      (a === 100 && b >= 64 && b <= 127)   ||  // 100.64/10 CGNAT / WARP mesh
-      (a === 169 && b === 254)             ||  // 169.254/16 link-local + cloud metadata
-      (a === 172 && b >= 16 && b <= 31)    ||  // 172.16/12 RFC1918
-      (a === 192 && b === 168)             ||  // 192.168/16 RFC1918
-      (a === 198 && (b === 18 || b === 19)) || // 198.18/15 benchmark
-      a >= 240                                  // 240/4 reserved
-    ) return false;
+  if (host.length === 0) return false;
+  if (host === "localhost" || host.endsWith(".internal") || host.endsWith(".local")) {
+    return false;
   }
 
-  // Literal IPv6: URL.hostname KEEPS the brackets ("[::1]"), so strip them before matching --
-  // otherwise none of these checks ever fire (the original bug let [::1] / [fe80::1] / [fc00::1] /
-  // [::ffff:169.254.169.254] through). Scoping to the bracketed literal also avoids false-positives
-  // on real domains like fconline.com / fd-cdn.com.
-  if (host.startsWith("[") && host.endsWith("]")) {
-    const h6 = host.slice(1, -1);
-    if (
-      h6 === "::" || h6 === "::1"                 ||  // unspecified / loopback
-      h6.startsWith("::ffff:")                    ||  // IPv4-mapped (covers mapped loopback/metadata)
-      h6.startsWith("fe80:")                      ||  // link-local
-      h6.startsWith("fc") || h6.startsWith("fd")      // unique local fc00::/7
-    ) return false;
+  if (isIpLiteralHostname(host)) {
+    return !isBlockedIp(host);
   }
 
   return true;
 }
 
-const BLOCKED_RESOURCE_TYPES = new Set(["image", "stylesheet", "font", "media"]);
+interface DohAnswer {
+  type: number;
+  data: string;
+}
 
+/** Resolve A + AAAA via Cloudflare DoH JSON. Throws on transport / HTTP failure. */
+export async function lookupDnsJson(
+  hostname: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const ips: string[] = [];
+  for (const type of ["A", "AAAA"] as const) {
+    const url =
+      `${DOH_ENDPOINT}?name=${encodeURIComponent(hostname)}&type=${type}`;
+    const res = await fetchImpl(url, {
+      headers: { Accept: "application/dns-json" },
+    });
+    if (!res.ok) {
+      throw new Error(`DoH ${type} failed: ${res.status}`);
+    }
+    const body = (await res.json()) as { Answer?: DohAnswer[] };
+    const want = type === "A" ? 1 : 28;
+    for (const ans of body.Answer ?? []) {
+      if (ans.type === want && typeof ans.data === "string" && ans.data.length > 0) {
+        ips.push(ans.data);
+      }
+    }
+  }
+  return ips;
+}
+
+export interface SsrfResolveOpts {
+  lookup?: DnsLookup;
+  /** Per-request hostname -> IPs cache (avoids DoH spam across redirect hops). */
+  cache?: Map<string, string[]>;
+}
+
+/**
+ * Full SSRF check including DNS resolution. Fail closed if lookup throws or
+ * returns no addresses. Unsafe if any resolved address is blocked.
+ */
+export async function isSsrfSafeResolved(
+  raw: string,
+  opts: SsrfResolveOpts = {},
+): Promise<boolean> {
+  if (!isSsrfSafe(raw)) return false;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (isIpLiteralHostname(host)) {
+    return !isBlockedIp(host);
+  }
+
+  const lookup = opts.lookup ?? lookupDnsJson;
+  let ips: string[];
+  try {
+    const cached = opts.cache?.get(host);
+    if (cached) {
+      ips = cached;
+    } else {
+      ips = await lookup(host);
+      opts.cache?.set(host, ips);
+    }
+  } catch {
+    return false;
+  }
+
+  if (ips.length === 0) return false;
+  return ips.every((ip) => !isBlockedIp(ip));
+}
+
+/** Sync abort decision (resource type + URL shape / literal IP). */
 export function shouldAbortBrowserRequest(rawUrl: string, resourceType: string): boolean {
   return BLOCKED_RESOURCE_TYPES.has(resourceType) || !isSsrfSafe(rawUrl);
+}
+
+/**
+ * Abort decision for intercepted browser requests, including DNS rebinding on
+ * every hop (document navigations, XHR, and redirect targets).
+ */
+export async function shouldAbortBrowserRequestResolved(
+  rawUrl: string,
+  resourceType: string,
+  opts: SsrfResolveOpts = {},
+): Promise<boolean> {
+  if (BLOCKED_RESOURCE_TYPES.has(resourceType)) return true;
+  return !(await isSsrfSafeResolved(rawUrl, opts));
 }

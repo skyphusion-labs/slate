@@ -16,7 +16,7 @@
 // into) another channel's search results or the shared knowledge base; same embedding model + shape.
 
 import puppeteer from "@cloudflare/puppeteer";
-import { isSsrfSafe, shouldAbortBrowserRequest } from "./ssrf";
+import { isSsrfSafeResolved, shouldAbortBrowserRequestResolved } from "./ssrf";
 
 interface Env {
   BROWSER: Fetcher;
@@ -120,17 +120,36 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
 async function handleFetch(req: Request, env: Env): Promise<Response> {
   const { url } = await req.json() as { url: string };
   if (!url) return err("url is required");
-  if (!isSsrfSafe(url)) return err("URL not allowed: must be a public http/https address", 400);
+
+  // Per-navigation DNS cache: every intercepted hop (including 30x redirects) re-checks
+  // the request URL and resolves the hostname so public names cannot rebind to metadata.
+  const dnsCache = new Map<string, string[]>();
+  if (!(await isSsrfSafeResolved(url, { cache: dnsCache }))) {
+    return err("URL not allowed: must be a public http/https address", 400);
+  }
 
   const browser = await puppeteer.launch(env.BROWSER);
   try {
     const page = await browser.newPage();
     await page.setRequestInterception(true);
     page.on("request", (r) => {
-      if (shouldAbortBrowserRequest(r.url(), r.resourceType())) void r.abort();
-      else void r.continue();
+      void (async () => {
+        try {
+          if (await shouldAbortBrowserRequestResolved(r.url(), r.resourceType(), { cache: dnsCache })) {
+            await r.abort();
+          } else {
+            await r.continue();
+          }
+        } catch {
+          try { await r.abort(); } catch { /* already handled / closed */ }
+        }
+      })();
     });
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25_000 });
+    const finalUrl = page.url();
+    if (!(await isSsrfSafeResolved(finalUrl, { cache: dnsCache }))) {
+      return err("URL not allowed: navigation landed on a non-public address", 400);
+    }
     const { title, content } = await page.evaluate(() => {
       ["script", "style", "nav", "header", "footer", "aside", "noscript"]
         .forEach(tag => document.querySelectorAll(tag).forEach(el => el.remove()));
@@ -139,7 +158,7 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
         content: (document.body?.innerText ?? "").replace(/\s{3,}/g, "\n\n").trim().slice(0, 10_000),
       };
     });
-    return json({ url, title, content });
+    return json({ url: finalUrl, title, content });
   } catch (e: unknown) {
     return err(`Browser fetch failed: ${e instanceof Error ? e.message : String(e)}`, 500);
   } finally {
