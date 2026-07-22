@@ -1,29 +1,37 @@
 name: Test and Native Code Coverage
 
+# Split so fork PR code never runs with write-scoped GITHUB_TOKEN / id-token
+# (preinstall / vitest compromise must not get pull-requests:write or OIDC).
+
 on:
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
   push:
-    branches: [ main, master ]
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   coverage:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write      
-      code-quality: write    
-      pull-requests: write   
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js environment
         uses: actions/setup-node@v7
         with:
-          node-version: '24'
-          cache: 'npm'
+          node-version: "24"
+          cache: npm
 
       - name: Install Root Dependencies
         run: npm ci
@@ -46,9 +54,30 @@ jobs:
       - name: Run Bot Smoke Test with Coverage
         run: npx vitest run --coverage.enabled=true --coverage.provider=istanbul --coverage.reporter=cobertura --teardownTimeout=1
 
-      - name: Upload coverage report
+      - name: Stage coverage for upload
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-cobertura
+          path: ./coverage/cobertura-coverage.xml
+          if-no-files-found: error
+
+  upload-coverage:
+    needs: coverage
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      code-quality: write
+      pull-requests: write
+    steps:
+      - name: Fetch coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-cobertura
+      - name: Upload coverage report
         uses: actions/upload-code-coverage@v1
         with:
-          file: ./coverage/cobertura-coverage.xml
+          file: ./cobertura-coverage.xml
           language: javascript
