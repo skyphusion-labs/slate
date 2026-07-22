@@ -319,10 +319,11 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
   if (body.content.length > MAX_KNOWLEDGE_CONTENT_LENGTH) {
     return err("content exceeds maximum length", 400);
   }
-  if (!isNonEmptyChannelId(body.channelId)) {
-    return err("channelId is required (non-empty string)", 400);
+  const channelId =
+    typeof body.channelId === "string" ? body.channelId.trim() : "";
+  if (!isNonEmptyChannelId(channelId)) {
+    return err("channelId is required (Discord snowflake)", 400);
   }
-  const channelId = body.channelId.trim();
   if (!channelAllowed(env.MEMORY_CHANNEL_ALLOWLIST, channelId)) {
     return err("Forbidden", 403);
   }
@@ -352,10 +353,11 @@ async function handleMemorySearch(req: Request, env: Env): Promise<Response> {
   const body = await req.json() as { query?: unknown; channelId?: unknown; topK?: unknown };
   const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
-  if (!isNonEmptyChannelId(body.channelId)) {
-    return err("channelId is required (non-empty string)", 400);
+  const channelId =
+    typeof body.channelId === "string" ? body.channelId.trim() : "";
+  if (!isNonEmptyChannelId(channelId)) {
+    return err("channelId is required (Discord snowflake)", 400);
   }
-  const channelId = body.channelId.trim();
   if (!channelAllowed(env.MEMORY_CHANNEL_ALLOWLIST, channelId)) {
     return err("Forbidden", 403);
   }

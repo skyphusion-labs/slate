@@ -233,7 +233,9 @@ const CFG = {
   gatewayEndpoint:      process.env.CF_GATEWAY_ENDPOINT     ?? '',
   searchUrl:            process.env.SEARCH_WORKER_URL       ?? '',
   searchSecret:         process.env.SEARCH_SECRET           ?? '',
-  // No fallback to SEARCH_SECRET -- worker requires distinct capability secrets.
+  // Capability-scoped: Worker rejects SEARCH_SECRET on /fetch and /memory/*.
+  // These MUST be set (distinct values) whenever SEARCH_WORKER_URL is used for
+  // those routes -- there is no fallback to searchSecret.
   fetchSecret:          process.env.FETCH_SECRET            ?? '',
   memorySecret:         process.env.MEMORY_SECRET           ?? '',
 };
@@ -691,9 +693,15 @@ async function executeTool(name, input) {
     return res.ok ? res.json() : `Research error: ${res.status}`;
   }
   if (name === 'fetch_page') {
-    if (!CFG.fetchSecret) return 'Fetch not configured.';
+    // Uses FETCH_SECRET only (CFG.fetchSecret) -- never SEARCH_SECRET.
+    const fetchSecret = CFG.fetchSecret;
+    if (!fetchSecret) return 'Fetch not configured.';
     log(`[search] fetch: ${input.url}`);
-    const res = await fetch(`${CFG.searchUrl}/fetch`, { method: 'POST', headers: searchHeaders(CFG.fetchSecret), body: JSON.stringify({ url: input.url }) });
+    const res = await fetch(`${CFG.searchUrl}/fetch`, {
+      method: 'POST',
+      headers: searchHeaders(fetchSecret),
+      body: JSON.stringify({ url: input.url }),
+    });
     return res.ok ? res.json() : `Fetch error: ${res.status}`;
   }
   if (name === 'search_knowledge') {

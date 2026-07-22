@@ -20,14 +20,33 @@ export const MEMORY_META_RESERVED = new Set(["channelId", "kind", "content", "cr
 /** Optional caller meta keys allowed on /memory/index (bot traffic tags). */
 export const MEMORY_META_ALLOWED = new Set(["method", "path"]);
 
+/** Sanitize a single allow-listed meta value (strict charset; no free-form injection). */
+function sanitizeMemoryMetaValue(key: string, value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+    return null;
+  }
+  const raw = String(value).slice(0, 200);
+  if (key === "method") {
+    const m = raw.trim().toUpperCase();
+    return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(m) ? m : null;
+  }
+  if (key === "path") {
+    // Absolute URL path only (no scheme/host/credentials).
+    const p = raw.trim();
+    return /^\/[\w./@%&=+-]{0,199}$/.test(p) ? p : null;
+  }
+  return null;
+}
+
 /** Sanitize /memory/index `meta`: allow-listed keys only; never clobber reserved fields. */
 export function sanitizeMemoryMeta(meta: unknown): Record<string, string> {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(meta as Record<string, unknown>).slice(0, 10)) {
     if (MEMORY_META_RESERVED.has(k) || !MEMORY_META_ALLOWED.has(k)) continue;
-    if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") continue;
-    out[k.slice(0, 40)] = String(v).slice(0, 200);
+    const clean = sanitizeMemoryMetaValue(k, v);
+    if (clean === null) continue;
+    out[k] = clean;
   }
   return out;
 }
