@@ -35,7 +35,9 @@
 //   CF_GATEWAY_ENDPOINT         CF AI Gateway compat URL (used to derive the Anthropic base URL).
 //   SEARCH_WORKER_URL           slate-search Worker base URL (enables web search + knowledge base +
 //                               the auto-ingested session-memory RAG index, slate#90)
-//   SEARCH_SECRET               shared secret for X-Search-Secret header
+//   SEARCH_SECRET               X-Search-Secret for /search and /knowledge/*
+//   FETCH_SECRET                X-Search-Secret for /fetch (optional; defaults to SEARCH_SECRET)
+//   MEMORY_SECRET               X-Search-Secret for /memory/* (optional; defaults to SEARCH_SECRET)
 //
 // ! commands:
 //   !brief                 show the current storyboard state (and render settings)
@@ -231,6 +233,8 @@ const CFG = {
   gatewayEndpoint:      process.env.CF_GATEWAY_ENDPOINT     ?? '',
   searchUrl:            process.env.SEARCH_WORKER_URL       ?? '',
   searchSecret:         process.env.SEARCH_SECRET           ?? '',
+  fetchSecret:          process.env.FETCH_SECRET            || process.env.SEARCH_SECRET || '',
+  memorySecret:         process.env.MEMORY_SECRET           || process.env.SEARCH_SECRET || '',
 };
 
 // The studio uses bearer-token auth (vivijure #423). If a studio URL is configured, a token is
@@ -510,11 +514,11 @@ async function logTraffic({ channelId, method, path, status, ok, requestSummary,
 // from every call site -- never awaited inline with the user-facing action, never throws.
 async function indexMemory(channelId, kind, content, meta = {}) {
   // channelId is required by slate-search (cross-channel memory isolation).
-  if (!CFG.searchUrl || !CFG.searchSecret || !content || !channelId) return;
+  if (!CFG.searchUrl || !CFG.memorySecret || !content || !channelId) return;
   try {
     await fetch(`${CFG.searchUrl}/memory/index`, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.searchSecret },
+      headers: { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.memorySecret },
       body:    JSON.stringify({ content: content.slice(0, 4000), kind, channelId, meta }),
     });
   } catch (e) {
@@ -665,35 +669,40 @@ const SEARCH_TOOLS = [
   },
 ];
 
+function searchHeaders(secret) {
+  return { 'Content-Type': 'application/json', 'X-Search-Secret': secret };
+}
+
 async function executeTool(name, input) {
   if (!CFG.searchUrl || !CFG.searchSecret) return 'Search not configured.';
-  const headers = { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.searchSecret };
 
   if (name === 'web_search') {
     log(`[search] web: ${input.query}`);
-    const res = await fetch(`${CFG.searchUrl}/search`, { method: 'POST', headers, body: JSON.stringify({ query: input.query, type: 'web' }) });
+    const res = await fetch(`${CFG.searchUrl}/search`, { method: 'POST', headers: searchHeaders(CFG.searchSecret), body: JSON.stringify({ query: input.query, type: 'web' }) });
     return res.ok ? res.json() : `Search error: ${res.status}`;
   }
   if (name === 'research') {
     log(`[search] research: ${input.query}`);
-    const res = await fetch(`${CFG.searchUrl}/search`, { method: 'POST', headers, body: JSON.stringify({ query: input.query, type: 'research' }) });
+    const res = await fetch(`${CFG.searchUrl}/search`, { method: 'POST', headers: searchHeaders(CFG.searchSecret), body: JSON.stringify({ query: input.query, type: 'research' }) });
     return res.ok ? res.json() : `Research error: ${res.status}`;
   }
   if (name === 'fetch_page') {
+    if (!CFG.fetchSecret) return 'Fetch not configured.';
     log(`[search] fetch: ${input.url}`);
-    const res = await fetch(`${CFG.searchUrl}/fetch`, { method: 'POST', headers, body: JSON.stringify({ url: input.url }) });
+    const res = await fetch(`${CFG.searchUrl}/fetch`, { method: 'POST', headers: searchHeaders(CFG.fetchSecret), body: JSON.stringify({ url: input.url }) });
     return res.ok ? res.json() : `Fetch error: ${res.status}`;
   }
   if (name === 'search_knowledge') {
     log(`[search] knowledge: ${input.query}`);
-    const res = await fetch(`${CFG.searchUrl}/knowledge/search`, { method: 'POST', headers, body: JSON.stringify({ query: input.query }) });
+    const res = await fetch(`${CFG.searchUrl}/knowledge/search`, { method: 'POST', headers: searchHeaders(CFG.searchSecret), body: JSON.stringify({ query: input.query }) });
     return res.ok ? res.json() : `Knowledge search error: ${res.status}`;
   }
   if (name === 'search_memory') {
+    if (!CFG.memorySecret) return 'Memory search not configured.';
     const channelId = currentChannelId();
     if (!channelId) return 'Memory search requires an active Discord channel.';
     log(`[search] memory: ${input.query} (channel ${channelId})`);
-    const res = await fetch(`${CFG.searchUrl}/memory/search`, { method: 'POST', headers, body: JSON.stringify({ query: input.query, channelId }) });
+    const res = await fetch(`${CFG.searchUrl}/memory/search`, { method: 'POST', headers: searchHeaders(CFG.memorySecret), body: JSON.stringify({ query: input.query, channelId }) });
     return res.ok ? res.json() : `Memory search error: ${res.status}`;
   }
   return 'Unknown tool';
@@ -1834,10 +1843,10 @@ async function indexKnowledge(content, title = '', author = '') {
 // ---------------------------------------------------------------------------
 
 async function queryMemory(channelId, query) {
-  if (!CFG.searchUrl || !CFG.searchSecret) return { ok: false, error: 'Search worker not configured' };
+  if (!CFG.searchUrl || !CFG.memorySecret) return { ok: false, error: 'Search worker not configured' };
   const res = await fetch(`${CFG.searchUrl}/memory/search`, {
     method:  'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.searchSecret },
+    headers: { 'Content-Type': 'application/json', 'X-Search-Secret': CFG.memorySecret },
     body:    JSON.stringify({ query, channelId }),
   });
   if (!res.ok) return { ok: false, error: `memory search failed ${res.status}` };

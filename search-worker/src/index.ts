@@ -37,9 +37,21 @@ interface Env {
   MEMORY: VectorizeIndex;
   BRAVE_API_KEY: string;
   TAVILY_API_KEY: string;
+  /** Auth for /search and /knowledge/* (X-Search-Secret). */
   SEARCH_SECRET: string;
+  /** Auth for /fetch. Prefer distinct from SEARCH_SECRET; falls back to SEARCH_SECRET if unset. */
+  FETCH_SECRET?: string;
+  /** Auth for /memory/*. Prefer distinct from SEARCH_SECRET; falls back to SEARCH_SECRET if unset. */
+  MEMORY_SECRET?: string;
   /** Optional comma-separated Discord channel IDs allowed for /memory/*. When set, others 403. */
   MEMORY_CHANNEL_ALLOWLIST?: string;
+}
+
+/** Capability-scoped secret for the request path (limits lateral movement on leak). */
+function secretForPath(pathname: string, env: Env): string {
+  if (pathname === "/fetch") return env.FETCH_SECRET || env.SEARCH_SECRET || "";
+  if (pathname.startsWith("/memory")) return env.MEMORY_SECRET || env.SEARCH_SECRET || "";
+  return env.SEARCH_SECRET || "";
 }
 
 interface BraveResult {
@@ -76,15 +88,17 @@ export default {
     if (req.method === "OPTIONS") return err("Method not allowed", 405);
     if (req.method === "GET" && url.pathname === "/health") return json({ ok: true });
 
-    // Auth is the Wrangler secret env.SEARCH_SECRET only -- never a source literal.
-    // Single shared secret is intentional (one Discord bot caller); rotate via wrangler
-    // if leaked. Optional MEMORY_CHANNEL_ALLOWLIST scopes memory to known channels.
+    // Capability-scoped Wrangler secrets (never source literals). Header name stays
+    // X-Search-Secret for bot compat; value must match the secret for this path.
+    // Set distinct FETCH_SECRET / MEMORY_SECRET in production so a leaked search
+    // token cannot drive /fetch (SSRF) or /memory (tenant data).
+    if (req.method !== "POST") return err("Method not allowed", 405);
+
     const providedHeader = req.headers.get("X-Search-Secret") ?? "";
-    const configured = env.SEARCH_SECRET ?? "";
+    const configured = secretForPath(url.pathname, env);
     if (!(await secretsMatch(providedHeader, configured))) {
       return err("Unauthorized", 401);
     }
-    if (req.method !== "POST") return err("Method not allowed", 405);
 
     if (url.pathname === "/search")           return handleSearch(req, env);
     if (url.pathname === "/fetch")            return handleFetch(req, env);
@@ -122,7 +136,7 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
         max_results: 6,
       }),
     });
-    if (!res.ok) return err(`Tavily error: ${res.status}`);
+    if (!res.ok) return err("Search upstream error", 502);
     const data = await res.json() as { answer?: string; results?: TavilyResult[] };
     return json({
       answer:  data.answer ?? null,
@@ -134,7 +148,7 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
   const res = await fetch(braveUrl, {
     headers: { "Accept": "application/json", "Accept-Encoding": "gzip", "X-Subscription-Token": env.BRAVE_API_KEY },
   });
-  if (!res.ok) return err(`Brave error: ${res.status}`);
+  if (!res.ok) return err("Search upstream error", 502);
   const data = await res.json() as { web?: { results?: BraveResult[] } };
   return json({
     results: (data.web?.results ?? []).map(r => ({ title: r.title, url: r.url, description: r.description?.slice(0, 400) })),
