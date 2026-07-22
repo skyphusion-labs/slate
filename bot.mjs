@@ -757,10 +757,9 @@ async function executeTool(name, input) {
     const channelId = currentChannelId();
     if (!channelId) return 'Memory search requires an active Discord channel.';
     log(`[search] memory: ${input.query} (channel ${channelId})`);
-    const memorySecret = CFG.memorySecret;
     const res = await fetch(`${CFG.searchUrl}/memory/search`, {
       method: 'POST',
-      headers: searchHeaders(memorySecret),
+      headers: searchHeaders(CFG.memorySecret),
       body: JSON.stringify({ query: input.query, channelId }),
     });
     return res.ok ? res.json() : `Memory search error: ${res.status}`;
