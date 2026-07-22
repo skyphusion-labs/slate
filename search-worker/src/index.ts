@@ -31,6 +31,9 @@ import {
   resolvePublicRedirectChain,
 } from "./ssrf";
 
+/** Reject POST JSON bodies larger than this (Content-Length + post-read check). */
+const MAX_JSON_BODY_BYTES = 256_000;
+
 interface Env {
   BROWSER: Fetcher;
   AI: Ai;
@@ -38,8 +41,10 @@ interface Env {
   MEMORY: VectorizeIndex;
   BRAVE_API_KEY: string;
   TAVILY_API_KEY: string;
-  /** Auth for /search and /knowledge/* (X-Search-Secret). */
+  /** Auth for /search (X-Search-Secret). */
   SEARCH_SECRET: string;
+  /** Auth for /knowledge/* — required, no SEARCH_SECRET fallback. */
+  KNOWLEDGE_SECRET: string;
   /** Auth for /fetch — required, no fallback (limits lateral movement). */
   FETCH_SECRET: string;
   /** Auth for /memory/* — required, no fallback (limits lateral movement). */
@@ -54,11 +59,10 @@ function secretForPath(pathname: string, env: Env): string {
   if (pathname === "/memory/index" || pathname === "/memory/search") {
     return (env.MEMORY_SECRET || "").trim();
   }
-  if (
-    pathname === "/search" ||
-    pathname === "/knowledge/index" ||
-    pathname === "/knowledge/search"
-  ) {
+  if (pathname === "/knowledge/index" || pathname === "/knowledge/search") {
+    return (env.KNOWLEDGE_SECRET || "").trim();
+  }
+  if (pathname === "/search") {
     return (env.SEARCH_SECRET || "").trim();
   }
   // Unknown path: no secret maps → 401 (never authenticate-then-404 with SEARCH_SECRET).
@@ -92,6 +96,37 @@ function err(msg: string, status = 400): Response {
   return json({ error: msg }, status);
 }
 
+/**
+ * Read and parse a POST JSON body with a hard size cap.
+ * Requires a valid Content-Length (411 if missing/invalid); 413 if over max;
+ * re-checks byte length after reading; 400 on invalid JSON.
+ */
+async function readJsonBody(req: Request): Promise<
+  { ok: true; body: unknown } | { ok: false; response: Response }
+> {
+  const cl = req.headers.get("Content-Length");
+  if (cl === null || cl.trim() === "") {
+    return { ok: false, response: err("Content-Length required", 411) };
+  }
+  const declared = Number(cl);
+  if (!Number.isFinite(declared) || !Number.isInteger(declared) || declared < 0) {
+    return { ok: false, response: err("Content-Length required", 411) };
+  }
+  if (declared > MAX_JSON_BODY_BYTES) {
+    return { ok: false, response: err("Payload Too Large", 413) };
+  }
+  const buf = await req.arrayBuffer();
+  if (buf.byteLength > MAX_JSON_BODY_BYTES) {
+    return { ok: false, response: err("Payload Too Large", 413) };
+  }
+  try {
+    const text = new TextDecoder().decode(buf);
+    return { ok: true, body: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false, response: err("Invalid JSON", 400) };
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -101,7 +136,7 @@ export default {
 
     // Capability-scoped Wrangler secrets (never source literals). Header name stays
     // X-Search-Secret for bot compat; value must match the secret for this path.
-    // All three secrets required, >=16 chars, pairwise distinct (no SEARCH_SECRET fallback).
+    // All four secrets required, >=16 chars, pairwise distinct (no SEARCH_SECRET fallback).
     if (req.method !== "POST") return err("Method not allowed", 405);
 
     if (!capabilitySecretsReady(env)) {
@@ -131,7 +166,9 @@ export default {
 // ---------------------------------------------------------------------------
 
 async function handleSearch(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { query?: unknown; type?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { query?: unknown; type?: unknown };
   const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
   const type = body.type === "research" ? "research" : "web";
@@ -177,7 +214,9 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 async function handleFetch(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { url?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { url?: unknown };
   const url = typeof body.url === "string" ? body.url : "";
   if (url.length === 0) return err("url is required");
   if (url.length > MAX_FETCH_URL_LENGTH) return err("url exceeds maximum length", 400);
@@ -267,7 +306,9 @@ async function embed(env: Env, text: string): Promise<number[]> {
 }
 
 async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { content?: unknown; title?: unknown; author?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { content?: unknown; title?: unknown; author?: unknown };
   if (typeof body.content !== "string" || body.content.length === 0) {
     return err("content is required");
   }
@@ -295,7 +336,9 @@ async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleKnowledgeSearch(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { query?: unknown; topK?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { query?: unknown; topK?: unknown };
   const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
   const topK = typeof body.topK === "number" && Number.isFinite(body.topK) ? body.topK : 5;
@@ -323,7 +366,9 @@ async function handleKnowledgeSearch(req: Request, env: Env): Promise<Response> 
 // ---------------------------------------------------------------------------
 
 async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as {
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as {
     content?: unknown; kind?: unknown; channelId?: unknown; meta?: unknown;
   };
   if (typeof body.content !== "string" || body.content.length === 0) {
@@ -363,7 +408,9 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleMemorySearch(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as { query?: unknown; channelId?: unknown; topK?: unknown };
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as { query?: unknown; channelId?: unknown; topK?: unknown };
   const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
   const channelId =

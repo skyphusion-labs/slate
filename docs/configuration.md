@@ -213,14 +213,21 @@ empty to run Slate without search.
 - **Example:** `SEARCH_WORKER_URL=https://slate-search.example.workers.dev`
 
 ### `SEARCH_SECRET`
-- **What:** password Slate sends as `X-Search-Secret` for `/search` and
-  `/knowledge/*`.
-- **Why:** it stops strangers from using those Worker routes. It **must** match
+- **What:** password Slate sends as `X-Search-Secret` for `/search` only.
+- **Why:** it stops strangers from using web/research search. It **must** match
   the Worker's `SEARCH_SECRET` (group 8). Mint a distinct value from
-  `FETCH_SECRET` / `MEMORY_SECRET` so a leak of one capability does not open the
-  others.
+  `KNOWLEDGE_SECRET` / `FETCH_SECRET` / `MEMORY_SECRET` so a leak of one
+  capability does not open the others.
 - **Where:** you invent it (`openssl rand -hex 32`).
 - **Example:** `SEARCH_SECRET=a-long-random-shared-string`
+
+### `KNOWLEDGE_SECRET`
+- **What:** password for `/knowledge/*` only. **Required** for `!learn` and
+  `search_knowledge`; there is no fallback to `SEARCH_SECRET`.
+- **Why:** capability isolation -- a stolen search secret must not allow
+  writing or reading the shared knowledge base.
+- **Set on the Worker with:** `npx wrangler secret put KNOWLEDGE_SECRET`
+- **Example:** `KNOWLEDGE_SECRET=another-long-random-string`
 
 ### `FETCH_SECRET`
 - **What:** password for `/fetch` only. **Required** when using `fetch_page`;
@@ -290,14 +297,16 @@ indexes -- `slate-knowledge` and `slate-memory`) live in
 - **Where:** tavily.com.
 - **Set with:** `npx wrangler secret put TAVILY_API_KEY`
 
-### `SEARCH_SECRET` / `FETCH_SECRET` / `MEMORY_SECRET`
-- **What:** three distinct passwords the Worker requires on incoming requests
-  (`/search`+`/knowledge/*`, `/fetch`, `/memory/*` respectively).
+### `SEARCH_SECRET` / `KNOWLEDGE_SECRET` / `FETCH_SECRET` / `MEMORY_SECRET`
+- **What:** four distinct passwords the Worker requires on incoming requests
+  (`/search`, `/knowledge/*`, `/fetch`, `/memory/*` respectively).
 - **Why:** each must equal the matching bot secret (group 6). There is **no**
-  fallback from `FETCH_SECRET` / `MEMORY_SECRET` to `SEARCH_SECRET`.
+  fallback from `KNOWLEDGE_SECRET` / `FETCH_SECRET` / `MEMORY_SECRET` to
+  `SEARCH_SECRET`.
 - **Where:** the same values you put in `slate.env`.
 - **Set with:**
   `npx wrangler secret put SEARCH_SECRET`,
+  `npx wrangler secret put KNOWLEDGE_SECRET`,
   `npx wrangler secret put FETCH_SECRET`,
   `npx wrangler secret put MEMORY_SECRET`
 

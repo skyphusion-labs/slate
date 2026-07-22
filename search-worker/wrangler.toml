@@ -26,10 +26,11 @@ index_name = "slate-memory"
 # Secrets (set via: wrangler secret put <NAME>)
 #   BRAVE_API_KEY
 #   TAVILY_API_KEY
-#   SEARCH_SECRET    X-Search-Secret for /search and /knowledge/*
-#   FETCH_SECRET     X-Search-Secret for /fetch (required; no fallback)
-#   MEMORY_SECRET    X-Search-Secret for /memory/* (required; no fallback)
-# Deploy: put all three as distinct values (each >= 16 chars). Worker 503s if any
+#   SEARCH_SECRET       X-Search-Secret for /search only
+#   KNOWLEDGE_SECRET    X-Search-Secret for /knowledge/* (required; no fallback)
+#   FETCH_SECRET        X-Search-Secret for /fetch (required; no fallback)
+#   MEMORY_SECRET       X-Search-Secret for /memory/* (required; no fallback)
+# Deploy: put all four as distinct values (each >= 16 chars). Worker 503s if any
 # are missing/short or if any two are equal.
 #
 # Optional vars (wrangler.toml [vars] or dashboard):

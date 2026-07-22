@@ -277,12 +277,13 @@ describe("dual DoH agreement", () => {
 });
 
 describe("capabilitySecretsReady", () => {
-  it("requires three long, pairwise-distinct secrets", () => {
+  it("requires four long, pairwise-distinct secrets", () => {
     expect(
       capabilitySecretsReady({
         SEARCH_SECRET: "a".repeat(16),
         FETCH_SECRET: "b".repeat(16),
         MEMORY_SECRET: "c".repeat(16),
+        KNOWLEDGE_SECRET: "d".repeat(16),
       }),
     ).toBe(true);
     expect(
@@ -290,11 +291,28 @@ describe("capabilitySecretsReady", () => {
         SEARCH_SECRET: "a".repeat(16),
         FETCH_SECRET: "a".repeat(16),
         MEMORY_SECRET: "c".repeat(16),
+        KNOWLEDGE_SECRET: "d".repeat(16),
+      }),
+    ).toBe(false);
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "a".repeat(16),
+        FETCH_SECRET: "b".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+        KNOWLEDGE_SECRET: "a".repeat(16),
       }),
     ).toBe(false);
     expect(
       capabilitySecretsReady({
         SEARCH_SECRET: "short",
+        FETCH_SECRET: "b".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+        KNOWLEDGE_SECRET: "d".repeat(16),
+      }),
+    ).toBe(false);
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "a".repeat(16),
         FETCH_SECRET: "b".repeat(16),
         MEMORY_SECRET: "c".repeat(16),
       }),

@@ -6,12 +6,8 @@ describe('Slate Orchestrated Studio Suite', () => {
     process.env.ANTHROPIC_API_KEY = 'mock-anthropic-key';
 
     process.env.LOG_SECRET = 'mock-log-secret-16+';
-    process.env.SEARCH_SECRET = 'mock-search-secret16';
-    process.env.FETCH_SECRET = 'mock-fetch-secret-16';
-    process.env.MEMORY_SECRET = 'mock-memory-secret16';
-
     process.env.LOG_WORKER_URL = 'http://localhost:8787';
-    process.env.SEARCH_WORKER_URL = 'http://localhost:8788';
+    // Leave SEARCH_WORKER_URL unset so search stays disabled (no mock capability secrets).
 
     await import('./bot.mjs');
   });

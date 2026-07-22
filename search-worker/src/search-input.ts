@@ -79,17 +79,19 @@ export async function secretsMatch(
   return (diff | longEnough) === 0;
 }
 
-/** SEARCH/FETCH/MEMORY must each be >=16 chars and pairwise distinct. */
+/** SEARCH/FETCH/MEMORY/KNOWLEDGE must each be >=16 chars and pairwise distinct. */
 export function capabilitySecretsReady(env: {
   SEARCH_SECRET?: string;
   FETCH_SECRET?: string;
   MEMORY_SECRET?: string;
+  KNOWLEDGE_SECRET?: string;
 }): boolean {
   const s = (env.SEARCH_SECRET || "").trim();
   const f = (env.FETCH_SECRET || "").trim();
   const m = (env.MEMORY_SECRET || "").trim();
-  if (s.length < 16 || f.length < 16 || m.length < 16) return false;
-  return new Set([s, f, m]).size === 3;
+  const k = (env.KNOWLEDGE_SECRET || "").trim();
+  if (s.length < 16 || f.length < 16 || m.length < 16 || k.length < 16) return false;
+  return new Set([s, f, m, k]).size === 4;
 }
 
 export function channelAllowed(allowlist: string | undefined, channelId: string): boolean {
