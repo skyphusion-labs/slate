@@ -3,7 +3,7 @@
 // Sync checks cover scheme + literal / reserved hosts + embedded credentials.
 // Async checks resolve via Cloudflare DNS-over-HTTPS (including CNAME targets)
 // and reject if ANY answer is private / link-local / metadata. Fail closed on
-// DNS errors or empty answers.
+// DNS errors, truncated answers, non-NOERROR Status, or empty answers.
 //
 // Browser policy: only main-frame `document` navigations are allowed (redirect
 // hops included). Scripts/XHR/etc. are aborted so in-page JS cannot open a
@@ -24,6 +24,7 @@ const DOH_TYPE_A = 1;
 const DOH_TYPE_NS = 2;
 const DOH_TYPE_CNAME = 5;
 const DOH_TYPE_AAAA = 28;
+const DOH_STATUS_NOERROR = 0;
 
 /** True when `ip` is loopback, private, link-local, CGNAT, metadata, or reserved. */
 export function isBlockedIp(ip: string): boolean {
@@ -54,8 +55,6 @@ function isBlockedIpv4(ip: string): boolean {
   const m = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (!m) return true;
   const octets = m.slice(1).map((x) => Number(x));
-  // Reject non-decimal / out-of-range forms the regex still matched (leading zeros
-  // are fine as decimal; WHATWG already canonicalizes octal/hex before hostname).
   if (octets.some((n) => n > 255)) return true;
   const [a, b] = octets;
   return (
@@ -85,7 +84,6 @@ function ipv4FromMappedV6(h6: string): string | null {
 function isIpLiteralHostname(host: string): boolean {
   if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return true;
   if (host.startsWith("[") && host.endsWith("]")) return true;
-  // Bare IPv6 from DoH / some parsers (contains ':').
   if (host.includes(":") && !host.includes(".")) return true;
   return false;
 }
@@ -133,8 +131,41 @@ interface DohAnswer {
   data: string;
 }
 
+interface DohJsonBody {
+  Status?: number;
+  TC?: boolean;
+  Answer?: unknown;
+}
+
 function cnameTargetHostname(data: string): string {
   return data.toLowerCase().replace(/\.$/, "");
+}
+
+function parseDohAnswers(body: DohJsonBody, type: "A" | "AAAA"): DohAnswer[] {
+  // Status 0 = NOERROR. Anything else (NXDOMAIN, SERVFAIL, ...) fails closed.
+  if (body.Status !== undefined && body.Status !== DOH_STATUS_NOERROR) {
+    throw new Error(`DoH Status ${body.Status}`);
+  }
+  // Truncated answers may omit private records the browser later sees -- refuse.
+  if (body.TC === true) {
+    throw new Error("DoH truncated");
+  }
+  if (body.Answer === undefined) return [];
+  if (!Array.isArray(body.Answer)) {
+    throw new Error(`DoH ${type} Answer is not an array`);
+  }
+  const out: DohAnswer[] = [];
+  for (const raw of body.Answer) {
+    if (!raw || typeof raw !== "object") {
+      throw new Error(`DoH ${type} Answer entry malformed`);
+    }
+    const ans = raw as { type?: unknown; data?: unknown };
+    if (typeof ans.type !== "number" || typeof ans.data !== "string" || ans.data.length === 0) {
+      throw new Error(`DoH ${type} Answer entry missing type/data`);
+    }
+    out.push({ type: ans.type, data: ans.data });
+  }
+  return out;
 }
 
 async function dohQuery(
@@ -149,14 +180,20 @@ async function dohQuery(
   if (!res.ok) {
     throw new Error(`DoH ${type} failed: ${res.status}`);
   }
-  const body = (await res.json()) as { Answer?: DohAnswer[] };
-  return body.Answer ?? [];
+  let body: DohJsonBody;
+  try {
+    body = (await res.json()) as DohJsonBody;
+  } catch {
+    throw new Error(`DoH ${type} JSON parse failed`);
+  }
+  return parseDohAnswers(body, type);
 }
 
 /**
  * Resolve A + AAAA via Cloudflare DoH JSON. Recurses into CNAME targets (bounded)
  * and unions their addresses so a public A + private CNAME chain cannot sneak past.
- * Throws on transport failure, reserved CNAME targets, or excessive CNAME depth.
+ * Throws on transport failure, reserved CNAME targets, truncated/non-NOERROR, or
+ * excessive CNAME depth.
  */
 export async function lookupDnsJson(
   hostname: string,
@@ -173,12 +210,12 @@ export async function lookupDnsJson(
   for (const type of ["A", "AAAA"] as const) {
     const want = type === "A" ? DOH_TYPE_A : DOH_TYPE_AAAA;
     for (const ans of await dohQuery(hostname, type, fetchImpl)) {
-      if (ans.type === DOH_TYPE_CNAME && typeof ans.data === "string") {
+      if (ans.type === DOH_TYPE_CNAME) {
         cnames.add(cnameTargetHostname(ans.data));
         continue;
       }
       if (ans.type === DOH_TYPE_NS) continue;
-      if (ans.type === want && typeof ans.data === "string" && ans.data.length > 0) {
+      if (ans.type === want) {
         ips.push(ans.data);
       }
     }
@@ -258,7 +295,6 @@ export async function shouldAbortBrowserRequestResolved(
   opts: SsrfResolveOpts = {},
 ): Promise<boolean> {
   if (!ALLOWED_BROWSER_RESOURCE_TYPES.has(resourceType)) return true;
-  // Sync reject first so private literals never wait on DoH.
   if (!isSsrfSafe(rawUrl)) return true;
   return !(await isSsrfSafeResolved(rawUrl, opts));
 }
@@ -266,9 +302,47 @@ export async function shouldAbortBrowserRequestResolved(
 export type RedirectFetch = (input: string, init: RequestInit) => Promise<Response>;
 
 /**
- * Walk HTTP 3xx Location hops with redirect:manual, validating every URL with
- * DoH before requesting it. Returns the first non-redirect URL (or the last
- * hop if the chain ends without a Location). Throws / returns null on unsafe.
+ * Resolve a Location / Refresh URL against `base`. Rejects non-http(s) schemes
+ * (including data:/javascript:) even when supplied as protocol-relative targets
+ * that somehow resolve oddly. Returns absolute href or null.
+ */
+export function resolveRedirectLocation(base: string, loc: string): string | null {
+  const trimmed = loc.trim();
+  if (!trimmed || trimmed.length > MAX_FETCH_URL_LENGTH) return null;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith("javascript:") ||
+    lower.startsWith("data:") ||
+    lower.startsWith("file:") ||
+    lower.startsWith("ftp:") ||
+    lower.startsWith("blob:")
+  ) {
+    return null;
+  }
+  try {
+    const abs = new URL(trimmed, base).href;
+    // Shape check (scheme/credentials/literals); caller still DoH-resolves.
+    return isSsrfSafe(abs) ? abs : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse non-standard `Refresh: <delay>; url=<target>` (or bare url after delay). */
+export function parseRefreshHeader(value: string): string | null {
+  const v = value.trim();
+  if (!v) return null;
+  const withUrl = v.match(/^\d+\s*;\s*url\s*=\s*("?)([^";]+)\1\s*$/i);
+  if (withUrl) return withUrl[2].trim();
+  const bare = v.match(/^\d+\s*;\s*(\S+)\s*$/i);
+  if (bare && !/^\d+$/.test(bare[1])) return bare[1].trim();
+  return null;
+}
+
+/**
+ * Walk HTTP 3xx Location hops (and Refresh headers) with redirect:manual,
+ * validating every URL with DoH before requesting it. Returns the first
+ * non-redirect URL. Returns null on unsafe / too many hops.
  */
 export async function resolvePublicRedirectChain(
   startUrl: string,
@@ -287,8 +361,6 @@ export async function resolvePublicRedirectChain(
       return null;
     }
     if (hop === maxHops) {
-      // Validated current but out of hops to follow further -- refuse rather than
-      // hand an unresolved chain to the browser.
       return null;
     }
 
@@ -306,15 +378,23 @@ export async function resolvePublicRedirectChain(
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("Location");
       if (!loc) return null;
-      try {
-        current = new URL(loc, current).href;
-      } catch {
-        return null;
-      }
+      const next = resolveRedirectLocation(current, loc);
+      if (!next) return null;
+      current = next;
       continue;
     }
 
-    // Non-redirect response: this is the document URL the browser may load.
+    // Non-3xx: still honor Refresh header (meta-refresh equivalent at HTTP layer).
+    const refresh = res.headers.get("Refresh");
+    if (refresh) {
+      const target = parseRefreshHeader(refresh);
+      if (!target) return null;
+      const next = resolveRedirectLocation(current, target);
+      if (!next) return null;
+      current = next;
+      continue;
+    }
+
     return current;
   }
 

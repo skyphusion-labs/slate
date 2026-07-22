@@ -27,3 +27,9 @@ index_name = "slate-memory"
 #   BRAVE_API_KEY
 #   TAVILY_API_KEY
 #   SEARCH_SECRET    shared token the Discord bot sends in X-Search-Secret
+#
+# Optional vars (wrangler.toml [vars] or dashboard):
+#   MEMORY_CHANNEL_ALLOWLIST  comma-separated Discord channel IDs permitted for
+#                             /memory/index and /memory/search. When unset, any
+#                             channelId is accepted (single-bot trust model).
+#                             Prefer matching the bot's DISCORD_CHANNEL_IDS.

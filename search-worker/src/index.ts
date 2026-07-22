@@ -17,6 +17,13 @@
 
 import puppeteer from "@cloudflare/puppeteer";
 import {
+  channelAllowed,
+  isNonEmptyChannelId,
+  MAX_KNOWLEDGE_CONTENT_LENGTH,
+  sanitizeSearchQuery,
+  timingSafeEqualString,
+} from "./search-input";
+import {
   isSsrfSafeResolved,
   MAX_FETCH_URL_LENGTH,
   resolvePublicRedirectChain,
@@ -31,6 +38,8 @@ interface Env {
   BRAVE_API_KEY: string;
   TAVILY_API_KEY: string;
   SEARCH_SECRET: string;
+  /** Optional comma-separated Discord channel IDs allowed for /memory/*. When set, others 403. */
+  MEMORY_CHANNEL_ALLOWLIST?: string;
 }
 
 interface BraveResult {
@@ -60,10 +69,6 @@ function err(msg: string, status = 400): Response {
   return json({ error: msg }, status);
 }
 
-function isNonEmptyChannelId(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 64;
-}
-
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -73,13 +78,13 @@ export default {
 
     // Auth is the Wrangler secret env.SEARCH_SECRET only -- never a source literal.
     // Single shared secret is intentional (one Discord bot caller); rotate via wrangler
-    // if leaked. Per-caller identity is out of scope for this Worker.
-    const providedHeader = req.headers.get("X-Search-Secret");
+    // if leaked. Optional MEMORY_CHANNEL_ALLOWLIST scopes memory to known channels.
+    const providedHeader = req.headers.get("X-Search-Secret") ?? "";
+    const configured = env.SEARCH_SECRET ?? "";
     if (
-      !env.SEARCH_SECRET ||
-      env.SEARCH_SECRET.length < 16 ||
-      !providedHeader ||
-      providedHeader !== env.SEARCH_SECRET
+      configured.length < 16 ||
+      providedHeader.length < 16 ||
+      !timingSafeEqualString(providedHeader, configured)
     ) {
       return err("Unauthorized", 401);
     }
@@ -101,14 +106,25 @@ export default {
 // ---------------------------------------------------------------------------
 
 async function handleSearch(req: Request, env: Env): Promise<Response> {
-  const { query, type = "web" } = await req.json() as { query: string; type?: string };
+  const body = await req.json() as { query?: unknown; type?: unknown };
+  const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
+  const type = body.type === "research" ? "research" : "web";
 
   if (type === "research") {
+    // Tavily documents Bearer auth; keep the key out of the JSON body.
     const res = await fetch("https://api.tavily.com/search", {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ api_key: env.TAVILY_API_KEY, query, search_depth: "advanced", include_answer: true, max_results: 6 }),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${env.TAVILY_API_KEY}`,
+      },
+      body: JSON.stringify({
+        query,
+        search_depth: "advanced",
+        include_answer: true,
+        max_results: 6,
+      }),
     });
     if (!res.ok) return err(`Tavily error: ${res.status}`);
     const data = await res.json() as { answer?: string; results?: TavilyResult[] };
@@ -134,11 +150,12 @@ async function handleSearch(req: Request, env: Env): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 async function handleFetch(req: Request, env: Env): Promise<Response> {
-  const { url } = await req.json() as { url: string };
-  if (typeof url !== "string" || url.length === 0) return err("url is required");
+  const body = await req.json() as { url?: unknown };
+  const url = typeof body.url === "string" ? body.url : "";
+  if (url.length === 0) return err("url is required");
   if (url.length > MAX_FETCH_URL_LENGTH) return err("url exceeds maximum length", 400);
 
-  // Pre-walk HTTP redirects in the Worker (redirect:manual) so Chromium never
+  // Pre-walk HTTP redirects (+ Refresh headers) in the Worker so Chromium never
   // dials a Location we have not already DoH-validated. Browser intercept is the
   // second line of defense for meta-refresh / unexpected document hops.
   const targetUrl = await resolvePublicRedirectChain(url);
@@ -173,6 +190,16 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
       }
     });
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 25_000 });
+    // Strip meta-refresh before Chromium can navigate away from the validated URL.
+    await page.evaluate(() => {
+      for (const el of document.querySelectorAll("meta[http-equiv]")) {
+        if ((el.getAttribute("http-equiv") || "").toLowerCase() === "refresh") {
+          el.remove();
+        }
+      }
+    });
+    // Brief settle so any already-queued refresh attempt surfaces in page.url().
+    await new Promise((r) => setTimeout(r, 300));
     const finalUrl = page.url();
     if (!(await isSsrfSafeResolved(finalUrl))) {
       return err("URL not allowed: navigation landed on a non-public address", 400);
@@ -204,10 +231,17 @@ async function embed(env: Env, text: string): Promise<number[]> {
 }
 
 async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
-  const { content, title = "", author = "" } = await req.json() as { content: string; title?: string; author?: string };
-  if (!content) return err("content is required");
+  const body = await req.json() as { content?: unknown; title?: unknown; author?: unknown };
+  if (typeof body.content !== "string" || body.content.length === 0) {
+    return err("content is required");
+  }
+  if (body.content.length > MAX_KNOWLEDGE_CONTENT_LENGTH) {
+    return err("content exceeds maximum length", 400);
+  }
+  const title = typeof body.title === "string" ? body.title : "";
+  const author = typeof body.author === "string" ? body.author : "";
 
-  const vector = await embed(env, content.slice(0, 4_000));
+  const vector = await embed(env, body.content.slice(0, 4_000));
   const id = crypto.randomUUID();
 
   await env.KNOWLEDGE.upsert([{
@@ -215,7 +249,7 @@ async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
     values: vector,
     metadata: {
       title:     title.slice(0, 200),
-      content:   content.slice(0, 2_000),
+      content:   body.content.slice(0, 2_000),
       author:    author.slice(0, 100),
       createdAt: new Date().toISOString(),
     },
@@ -225,8 +259,10 @@ async function handleKnowledgeIndex(req: Request, env: Env): Promise<Response> {
 }
 
 async function handleKnowledgeSearch(req: Request, env: Env): Promise<Response> {
-  const { query, topK = 5 } = await req.json() as { query: string; topK?: number };
+  const body = await req.json() as { query?: unknown; topK?: unknown };
+  const query = sanitizeSearchQuery(body.query);
   if (!query) return err("query is required");
+  const topK = typeof body.topK === "number" && Number.isFinite(body.topK) ? body.topK : 5;
 
   const vector  = await embed(env, query);
   const results = await env.KNOWLEDGE.query(vector, { topK: Math.min(topK, 10), returnMetadata: "all" });
@@ -257,10 +293,16 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
   if (typeof body.content !== "string" || body.content.length === 0) {
     return err("content is required");
   }
+  if (body.content.length > MAX_KNOWLEDGE_CONTENT_LENGTH) {
+    return err("content exceeds maximum length", 400);
+  }
   if (!isNonEmptyChannelId(body.channelId)) {
     return err("channelId is required (non-empty string)", 400);
   }
   const channelId = body.channelId.trim();
+  if (!channelAllowed(env.MEMORY_CHANNEL_ALLOWLIST, channelId)) {
+    return err("Forbidden", 403);
+  }
   const kind = typeof body.kind === "string" ? body.kind : "chat";
   const meta =
     body.meta && typeof body.meta === "object" && !Array.isArray(body.meta)
@@ -287,16 +329,18 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
 
 async function handleMemorySearch(req: Request, env: Env): Promise<Response> {
   const body = await req.json() as { query?: unknown; channelId?: unknown; topK?: unknown };
-  if (typeof body.query !== "string" || body.query.length === 0) {
-    return err("query is required");
-  }
+  const query = sanitizeSearchQuery(body.query);
+  if (!query) return err("query is required");
   if (!isNonEmptyChannelId(body.channelId)) {
     return err("channelId is required (non-empty string)", 400);
   }
   const channelId = body.channelId.trim();
+  if (!channelAllowed(env.MEMORY_CHANNEL_ALLOWLIST, channelId)) {
+    return err("Forbidden", 403);
+  }
   const topK = typeof body.topK === "number" && Number.isFinite(body.topK) ? body.topK : 5;
 
-  const vector  = await embed(env, body.query);
+  const vector  = await embed(env, query);
   const results = await env.MEMORY.query(vector, {
     topK:           Math.min(topK, 10),
     returnMetadata: "all",
