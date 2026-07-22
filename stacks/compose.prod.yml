@@ -16,7 +16,9 @@
 #     CF_AIG_TOKEN             - CF API token for AI Gateway (Anthropic path)
 #     CF_GATEWAY_ENDPOINT      - CF AI Gateway compat URL
 #     SEARCH_WORKER_URL        - slate-search Worker base URL
-#     SEARCH_SECRET            - shared secret for X-Search-Secret header
+#     SEARCH_SECRET            - X-Search-Secret for /search + /knowledge/*
+#     FETCH_SECRET             - X-Search-Secret for /fetch (required; no SEARCH_SECRET fallback)
+#     MEMORY_SECRET            - X-Search-Secret for /memory/* (required; no SEARCH_SECRET fallback)
 #     CF_R2_ACCESS_ID          - R2 access key (for portrait uploads via LLM API)
 #     CF_R2_SECRET             - R2 secret key
 #
@@ -53,6 +55,8 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://localhost:11434/v1}
       SEARCH_WORKER_URL: ${SEARCH_WORKER_URL:-}
       SEARCH_SECRET: ${SEARCH_SECRET:-}
+      FETCH_SECRET: ${FETCH_SECRET:-}
+      MEMORY_SECRET: ${MEMORY_SECRET:-}
       TRUSTED_BOT_IDS: ${TRUSTED_BOT_IDS:-}
       LOG_WORKER_URL: ${LOG_WORKER_URL:-}
       LOG_SECRET: ${LOG_SECRET:-}

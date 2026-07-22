@@ -20,6 +20,7 @@ import {
   channelAllowed,
   isNonEmptyChannelId,
   MAX_KNOWLEDGE_CONTENT_LENGTH,
+  sanitizeMemoryMeta,
   sanitizeSearchQuery,
   secretsMatch,
 } from "./search-input";
@@ -27,6 +28,7 @@ import {
   isSsrfSafeResolved,
   MAX_FETCH_URL_LENGTH,
   resolvePublicRedirectChain,
+  shouldAbortBrowserRequestResolved,
 } from "./ssrf";
 
 interface Env {
@@ -207,9 +209,14 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
     const page = await browser.newPage();
     await page.setJavaScriptEnabled(false);
     // Offline + intercept: Chromium must not dial anything while parsing setContent HTML.
+    // Always abort (never continue). shouldAbortBrowserRequestResolved still runs so any
+    // future continue() path keeps DNS re-check coverage, and the helper stays live.
     await page.setOfflineMode(true);
     await page.setRequestInterception(true);
     page.on("request", async (r) => {
+      try {
+        await shouldAbortBrowserRequestResolved(r.url(), r.resourceType());
+      } catch { /* ignore */ }
       try { await r.abort(); } catch { /* ignore */ }
     });
     await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 25_000 });
@@ -320,10 +327,8 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
     return err("Forbidden", 403);
   }
   const kind = typeof body.kind === "string" ? body.kind : "chat";
-  const meta =
-    body.meta && typeof body.meta === "object" && !Array.isArray(body.meta)
-      ? body.meta as Record<string, string>
-      : {};
+  // Trusted fields last so sanitizeMemoryMeta can never clobber channelId / kind / content.
+  const safeMeta = sanitizeMemoryMeta(body.meta);
 
   const vector = await embed(env, body.content.slice(0, 4_000));
   const id = crypto.randomUUID();
@@ -332,11 +337,11 @@ async function handleMemoryIndex(req: Request, env: Env): Promise<Response> {
     id,
     values: vector,
     metadata: {
+      ...safeMeta,
       kind:      String(kind).slice(0, 40),
       channelId,
       content:   body.content.slice(0, 2_000),
       createdAt: new Date().toISOString(),
-      ...Object.fromEntries(Object.entries(meta).slice(0, 10).map(([k, v]) => [k.slice(0, 40), String(v).slice(0, 200)])),
     },
   }]);
 

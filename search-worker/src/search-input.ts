@@ -9,9 +9,27 @@ export function sanitizeSearchQuery(value: unknown): string | null {
   return cleaned;
 }
 
-/** Discord snowflake-shaped channel IDs only (rejects arbitrary tenant strings). */
+/** Discord snowflake channel IDs (typically 17–20 digits; reject short/arbitrary tenants). */
 export function isNonEmptyChannelId(value: unknown): value is string {
-  return typeof value === "string" && /^\d{5,32}$/.test(value.trim());
+  return typeof value === "string" && /^\d{17,20}$/.test(value.trim());
+}
+
+/** Reserved Vectorize metadata keys -- caller-supplied `meta` must never overwrite these. */
+export const MEMORY_META_RESERVED = new Set(["channelId", "kind", "content", "createdAt", "id"]);
+
+/** Optional caller meta keys allowed on /memory/index (bot traffic tags). */
+export const MEMORY_META_ALLOWED = new Set(["method", "path"]);
+
+/** Sanitize /memory/index `meta`: allow-listed keys only; never clobber reserved fields. */
+export function sanitizeMemoryMeta(meta: unknown): Record<string, string> {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(meta as Record<string, unknown>).slice(0, 10)) {
+    if (MEMORY_META_RESERVED.has(k) || !MEMORY_META_ALLOWED.has(k)) continue;
+    if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") continue;
+    out[k.slice(0, 40)] = String(v).slice(0, 200);
+  }
+  return out;
 }
 
 /**
@@ -41,7 +59,10 @@ export function channelAllowed(allowlist: string | undefined, channelId: string)
   const raw = allowlist?.trim();
   if (!raw) return true;
   const allowed = new Set(
-    raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0),
+    raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => isNonEmptyChannelId(s)),
   );
-  return allowed.has(channelId);
+  return allowed.has(channelId.trim());
 }

@@ -675,14 +675,17 @@ function searchHeaders(secret) {
 }
 
 async function executeTool(name, input) {
-  if (!CFG.searchUrl || !CFG.searchSecret) return 'Search not configured.';
+  // Per-capability secrets: do not require SEARCH_SECRET for fetch/memory tools.
+  if (!CFG.searchUrl) return 'Search not configured.';
 
   if (name === 'web_search') {
+    if (!CFG.searchSecret) return 'Search not configured.';
     log(`[search] web: ${input.query}`);
     const res = await fetch(`${CFG.searchUrl}/search`, { method: 'POST', headers: searchHeaders(CFG.searchSecret), body: JSON.stringify({ query: input.query, type: 'web' }) });
     return res.ok ? res.json() : `Search error: ${res.status}`;
   }
   if (name === 'research') {
+    if (!CFG.searchSecret) return 'Search not configured.';
     log(`[search] research: ${input.query}`);
     const res = await fetch(`${CFG.searchUrl}/search`, { method: 'POST', headers: searchHeaders(CFG.searchSecret), body: JSON.stringify({ query: input.query, type: 'research' }) });
     return res.ok ? res.json() : `Research error: ${res.status}`;
@@ -694,6 +697,7 @@ async function executeTool(name, input) {
     return res.ok ? res.json() : `Fetch error: ${res.status}`;
   }
   if (name === 'search_knowledge') {
+    if (!CFG.searchSecret) return 'Search not configured.';
     log(`[search] knowledge: ${input.query}`);
     const res = await fetch(`${CFG.searchUrl}/knowledge/search`, { method: 'POST', headers: searchHeaders(CFG.searchSecret), body: JSON.stringify({ query: input.query }) });
     return res.ok ? res.json() : `Knowledge search error: ${res.status}`;

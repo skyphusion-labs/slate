@@ -19,7 +19,12 @@ export const MAX_FETCH_URL_LENGTH = 2048;
 export const MAX_REDIRECT_HOPS = 5;
 const MAX_CNAME_DEPTH = 4;
 
-const DOH_ENDPOINT = "https://cloudflare-dns.com/dns-query";
+// Hit Cloudflare DoH by address (not hostname) so resolving the resolver is not itself
+// a dependency. Dual-query 1.1.1.1 + 1.0.0.1 and require agreement before trusting answers.
+const DOH_ENDPOINTS = [
+  "https://1.1.1.1/dns-query",
+  "https://1.0.0.1/dns-query",
+] as const;
 const DOH_TYPE_A = 1;
 const DOH_TYPE_NS = 2;
 const DOH_TYPE_CNAME = 5;
@@ -172,8 +177,9 @@ async function dohQuery(
   hostname: string,
   type: "A" | "AAAA",
   fetchImpl: typeof fetch,
+  endpoint: string,
 ): Promise<DohAnswer[]> {
-  const url = `${DOH_ENDPOINT}?name=${encodeURIComponent(hostname)}&type=${type}`;
+  const url = `${endpoint}?name=${encodeURIComponent(hostname)}&type=${type}`;
   const res = await fetchImpl(url, {
     headers: { Accept: "application/dns-json" },
   });
@@ -187,6 +193,28 @@ async function dohQuery(
     throw new Error(`DoH ${type} JSON parse failed`);
   }
   return parseDohAnswers(body, type);
+}
+
+function normAnswers(answers: DohAnswer[]): string {
+  return answers
+    .map((a) => `${a.type}\0${a.data}`)
+    .sort()
+    .join("\n");
+}
+
+/** Query both pinned DoH endpoints; require identical Answer sets (fail closed on disagreement). */
+async function dohQueryAgreed(
+  hostname: string,
+  type: "A" | "AAAA",
+  fetchImpl: typeof fetch,
+): Promise<DohAnswer[]> {
+  const [a, b] = await Promise.all(
+    DOH_ENDPOINTS.map((ep) => dohQuery(hostname, type, fetchImpl, ep)),
+  );
+  if (normAnswers(a) !== normAnswers(b)) {
+    throw new Error(`DoH ${type} resolver disagreement`);
+  }
+  return a;
 }
 
 /**
@@ -209,7 +237,7 @@ export async function lookupDnsJson(
 
   for (const type of ["A", "AAAA"] as const) {
     const want = type === "A" ? DOH_TYPE_A : DOH_TYPE_AAAA;
-    for (const ans of await dohQuery(hostname, type, fetchImpl)) {
+    for (const ans of await dohQueryAgreed(hostname, type, fetchImpl)) {
       if (ans.type === DOH_TYPE_CNAME) {
         cnames.add(cnameTargetHostname(ans.data));
         continue;
@@ -381,17 +409,9 @@ export async function resolvePublicRedirectChain(
       continue;
     }
 
-    // Non-3xx: still honor Refresh header (meta-refresh equivalent at HTTP layer).
-    const refresh = res.headers.get("Refresh");
-    if (refresh) {
-      const target = parseRefreshHeader(refresh);
-      if (!target) return null;
-      const next = resolveRedirectLocation(current, target);
-      if (!next) return null;
-      current = next;
-      continue;
-    }
-
+    // Refresh-on-2xx is a rare legacy pattern; do not follow it as a redirect hop
+    // (3xx Location already handled above). Meta-refresh inside HTML is stripped
+    // after setContent in handleFetch.
     return current;
   }
 
