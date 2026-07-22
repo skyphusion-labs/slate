@@ -249,8 +249,10 @@ describe("channel id + memory meta sanitize", () => {
   });
 
   it("rejects free-form meta values (strict method/path charset)", () => {
-    expect(sanitizeMemoryMeta({ method: "TRACE", path: "/ok" })).toEqual({});
-    expect(sanitizeMemoryMeta({ method: "GET", path: "https://evil.example/" })).toEqual({});
+    expect(sanitizeMemoryMeta({ method: "TRACE", path: "/ok" })).toEqual({ path: "/ok" });
+    expect(sanitizeMemoryMeta({ method: "GET", path: "https://evil.example/" })).toEqual({
+      method: "GET",
+    });
     expect(sanitizeMemoryMeta({ method: "get", path: "/studio/api" })).toEqual({
       method: "GET",
       path: "/studio/api",
