@@ -129,9 +129,11 @@ describe("search-worker SSRF filtering", () => {
     expect(await isSsrfSafeResolved("https://flip.example/", { lookup })).toBe(false);
   });
 
-  it("rejects data/javascript Location targets when resolving redirects", () => {
+  it("rejects non-http(s) Location targets when resolving redirects", () => {
     expect(resolveRedirectLocation("https://public.example/", "data:text/html,hi")).toBeNull();
     expect(resolveRedirectLocation("https://public.example/", "javascript:alert(1)")).toBeNull();
+    expect(resolveRedirectLocation("https://public.example/", "vbscript:msgbox(1)")).toBeNull();
+    expect(resolveRedirectLocation("https://public.example/", "file:///etc/passwd")).toBeNull();
     expect(resolveRedirectLocation("https://public.example/", "//169.254.169.254/")).toBeNull();
     expect(resolveRedirectLocation("https://public.example/", "https://ok.example/x")).toBe(
       "https://ok.example/x",

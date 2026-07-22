@@ -309,26 +309,16 @@ export async function shouldAbortBrowserRequestResolved(
 export type RedirectFetch = (input: string, init: RequestInit) => Promise<Response>;
 
 /**
- * Resolve a Location / Refresh URL against `base`. Rejects non-http(s) schemes
- * (including data:/javascript:) even when supplied as protocol-relative targets
- * that somehow resolve oddly. Returns absolute href or null.
+ * Resolve a Location / Refresh URL against `base`. Only http/https survive
+ * `isSsrfSafe` (allow-list -- covers javascript:/data:/vbscript:/file:/...).
+ * Returns absolute href or null.
  */
 export function resolveRedirectLocation(base: string, loc: string): string | null {
   const trimmed = loc.trim();
   if (!trimmed || trimmed.length > MAX_FETCH_URL_LENGTH) return null;
-  const lower = trimmed.toLowerCase();
-  if (
-    lower.startsWith("javascript:") ||
-    lower.startsWith("data:") ||
-    lower.startsWith("file:") ||
-    lower.startsWith("ftp:") ||
-    lower.startsWith("blob:")
-  ) {
-    return null;
-  }
   try {
     const abs = new URL(trimmed, base).href;
-    // Shape check (scheme/credentials/literals); caller still DoH-resolves.
+    // Shape check (scheme allow-list / credentials / literals); caller still DoH-resolves.
     return isSsrfSafe(abs) ? abs : null;
   } catch {
     return null;
