@@ -19,11 +19,12 @@ export const MAX_FETCH_URL_LENGTH = 2048;
 export const MAX_REDIRECT_HOPS = 5;
 const MAX_CNAME_DEPTH = 4;
 
-// Hit Cloudflare DoH by address (not hostname) so resolving the resolver is not itself
-// a dependency. Dual-query 1.1.1.1 + 1.0.0.1 and require agreement before trusting answers.
+// Dual Cloudflare DoH hostnames (valid TLS certs / SNI). Require identical Answer
+// sets before trusting either. Avoid bare-IP https://1.1.1.1 (Workers TLS hostname
+// verification rejects the cloudflare-dns.com cert against an IP literal).
 const DOH_ENDPOINTS = [
-  "https://1.1.1.1/dns-query",
-  "https://1.0.0.1/dns-query",
+  "https://cloudflare-dns.com/dns-query",
+  "https://one.one.one.one/dns-query",
 ] as const;
 const DOH_TYPE_A = 1;
 const DOH_TYPE_NS = 2;

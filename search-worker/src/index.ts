@@ -17,6 +17,7 @@
 
 import puppeteer from "@cloudflare/puppeteer";
 import {
+  capabilitySecretsReady,
   channelAllowed,
   isNonEmptyChannelId,
   MAX_KNOWLEDGE_CONTENT_LENGTH,
@@ -50,19 +51,19 @@ interface Env {
 
 /** Capability-scoped secret for exact known routes (no prefix matching / no fallback). */
 function secretForPath(pathname: string, env: Env): string {
-  if (pathname === "/fetch") return env.FETCH_SECRET || "";
+  if (pathname === "/fetch") return (env.FETCH_SECRET || "").trim();
   if (pathname === "/memory/index" || pathname === "/memory/search") {
-    return env.MEMORY_SECRET || "";
+    return (env.MEMORY_SECRET || "").trim();
   }
   if (
     pathname === "/search" ||
     pathname === "/knowledge/index" ||
     pathname === "/knowledge/search"
   ) {
-    return env.SEARCH_SECRET || "";
+    return (env.SEARCH_SECRET || "").trim();
   }
-  // Unknown path: require SEARCH_SECRET then 404 (never open unauthenticated).
-  return env.SEARCH_SECRET || "";
+  // Unknown path: no secret maps → 401 (never authenticate-then-404 with SEARCH_SECRET).
+  return "";
 }
 
 interface BraveResult {
@@ -101,8 +102,15 @@ export default {
 
     // Capability-scoped Wrangler secrets (never source literals). Header name stays
     // X-Search-Secret for bot compat; value must match the secret for this path.
-    // FETCH_SECRET and MEMORY_SECRET are required (no SEARCH_SECRET fallback).
+    // All three secrets required, >=16 chars, pairwise distinct (no SEARCH_SECRET fallback).
     if (req.method !== "POST") return err("Method not allowed", 405);
+
+    if (!capabilitySecretsReady(env)) {
+      return err(
+        "capability secrets not configured: set distinct SEARCH_SECRET, FETCH_SECRET, MEMORY_SECRET (each >= 16 chars)",
+        503,
+      );
+    }
 
     const providedHeader = req.headers.get("X-Search-Secret") ?? "";
     const configured = secretForPath(url.pathname, env);

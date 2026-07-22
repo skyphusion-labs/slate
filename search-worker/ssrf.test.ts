@@ -13,6 +13,7 @@ import {
   type DnsLookup,
 } from "./src/ssrf";
 import {
+  capabilitySecretsReady,
   channelAllowed,
   isNonEmptyChannelId,
   sanitizeMemoryMeta,
@@ -272,6 +273,32 @@ describe("dual DoH agreement", () => {
       );
     };
     await expect(lookupDnsJson("example.com", disagree)).rejects.toThrow(/disagreement/i);
+  });
+});
+
+describe("capabilitySecretsReady", () => {
+  it("requires three long, pairwise-distinct secrets", () => {
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "a".repeat(16),
+        FETCH_SECRET: "b".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+      }),
+    ).toBe(true);
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "a".repeat(16),
+        FETCH_SECRET: "a".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+      }),
+    ).toBe(false);
+    expect(
+      capabilitySecretsReady({
+        SEARCH_SECRET: "short",
+        FETCH_SECRET: "b".repeat(16),
+        MEMORY_SECRET: "c".repeat(16),
+      }),
+    ).toBe(false);
   });
 });
 
