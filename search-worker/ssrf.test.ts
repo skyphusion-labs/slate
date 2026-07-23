@@ -69,6 +69,13 @@ describe("search-worker SSRF filtering", () => {
     expect(isBlockedIp("8.8.8.8")).toBe(false);
   });
 
+  it("blocks NAT64 and 6to4 IPv4-embedded AAAA answers", () => {
+    expect(isBlockedIp("64:ff9b::a9fe:a9fe")).toBe(true);
+    expect(isBlockedIp("64:ff9b:1:0:a9fe:a9fe")).toBe(true);
+    expect(isBlockedIp("2002:a9fe:a9fe::")).toBe(true);
+    expect(isBlockedIp("2002:0808:0808::")).toBe(false);
+  });
+
   it("rejects DNS-rebinding hostnames that resolve to private/metadata IPs", async () => {
     const lookup: DnsLookup = async () => ["169.254.169.254"];
     expect(await isSsrfSafeResolved("https://rebind.example/meta", { lookup })).toBe(false);
