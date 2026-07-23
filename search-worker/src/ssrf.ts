@@ -36,6 +36,12 @@ export function isBlockedIp(ip: string): boolean {
   const mappedV4 = ipv4FromMappedV6(host);
   if (mappedV4) return isBlockedIpv4(mappedV4);
 
+  const nat64V4 = ipv4FromNat64(host);
+  if (nat64V4) return isBlockedIpv4(nat64V4);
+
+  const six2fourV4 = ipv4From6to4(host);
+  if (six2fourV4) return isBlockedIpv4(six2fourV4);
+
   const v4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (v4) return isBlockedIpv4(host);
 
@@ -81,6 +87,28 @@ function ipv4FromMappedV6(h6: string): string | null {
   if (!hex) return null;
   const hi = Number.parseInt(hex[1], 16);
   const lo = Number.parseInt(hex[2], 16);
+  return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+}
+
+/** Decode NAT64 Well-Known Prefix (64:ff9b::/96) IPv4 tail, else null. */
+function ipv4FromNat64(h6: string): string | null {
+  const lower = h6.toLowerCase();
+  if (!lower.startsWith("64:ff9b")) return null;
+  const tail = lower.match(/:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (!tail) return null;
+  const hi = Number.parseInt(tail[1], 16);
+  const lo = Number.parseInt(tail[2], 16);
+  if (Number.isNaN(hi) || Number.isNaN(lo)) return null;
+  return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+}
+
+/** Decode 6to4 (2002:VVVV:VVVV::/48) embedded IPv4, else null. */
+function ipv4From6to4(h6: string): string | null {
+  const m = h6.toLowerCase().match(/^2002:([0-9a-f]{1,4}):([0-9a-f]{1,4})/);
+  if (!m) return null;
+  const hi = Number.parseInt(m[1], 16);
+  const lo = Number.parseInt(m[2], 16);
+  if (Number.isNaN(hi) || Number.isNaN(lo)) return null;
   return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
 }
 
