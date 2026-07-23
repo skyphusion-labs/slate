@@ -27,6 +27,20 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+/** Constant-time secret compare (K3: non-short-circuiting !== on LOG_SECRET). */
+function secretsMatch(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    let pad = 0;
+    for (let i = 0; i < a.length; i++) pad |= a.charCodeAt(i) ^ a.charCodeAt(i);
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+const MAX_INGEST_BYTES = 1_048_576; // 1 MiB cap per flush (K3: unbounded R2 writes)
+
 // Sanitize a caller-supplied service name to a safe R2 key segment.
 function safeService(raw: string | null): string {
   const s = (raw ?? "slate").toLowerCase().replace(/[^a-z0-9_-]/g, "");
@@ -48,7 +62,7 @@ export default {
     if (req.method === "GET" && url.pathname === "/health") return json({ ok: true });
 
     const secret = req.headers.get("X-Log-Secret");
-    if (!secret || secret !== env.LOG_SECRET) return json({ error: "Unauthorized" }, 401);
+    if (!secret || !secretsMatch(secret, env.LOG_SECRET)) return json({ error: "Unauthorized" }, 401);
 
     if (req.method === "POST" && url.pathname === "/ingest") return handleIngest(req, env, url);
     if (req.method === "GET" && url.pathname === "/tail") return handleTail(env, url);
@@ -59,7 +73,14 @@ export default {
 
 async function handleIngest(req: Request, env: Env, url: URL): Promise<Response> {
   const service = safeService(url.searchParams.get("service"));
+  const declared = parseInt(req.headers.get("content-length") ?? "0", 10) || 0;
+  if (declared > MAX_INGEST_BYTES) {
+    return json({ error: "Payload too large", max_bytes: MAX_INGEST_BYTES }, 413);
+  }
   const body = await req.text();
+  if (body.length > MAX_INGEST_BYTES) {
+    return json({ error: "Payload too large", max_bytes: MAX_INGEST_BYTES }, 413);
+  }
   if (!body.trim()) return json({ ok: true, bytes: 0, skipped: "empty" });
 
   const now = Date.now();
