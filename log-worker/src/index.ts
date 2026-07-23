@@ -27,16 +27,20 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-/** Constant-time secret compare (K3: non-short-circuiting !== on LOG_SECRET). */
-function secretsMatch(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    let pad = 0;
-    for (let i = 0; i < a.length; i++) pad |= a.charCodeAt(i) ^ a.charCodeAt(i);
-    return false;
-  }
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+/** Constant-time secret compare (K3: pad both sides to same length; no length short-circuit). */
+function secretsMatch(provided: string, configured: string, minLength = 16): boolean {
+  const enc = new TextEncoder();
+  const a = enc.encode(provided);
+  const b = enc.encode(configured);
+  const n = Math.max(a.length, b.length, 1);
+  const pa = new Uint8Array(n);
+  const pb = new Uint8Array(n);
+  pa.set(a);
+  pb.set(b);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < n; i++) diff |= pa[i]! ^ pb[i]!;
+  const longEnough = configured.length >= minLength ? 0 : 1;
+  return (diff | longEnough) === 0;
 }
 
 const MAX_INGEST_BYTES = 1_048_576; // 1 MiB cap per flush (K3: unbounded R2 writes)
