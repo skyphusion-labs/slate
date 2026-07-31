@@ -25,7 +25,7 @@
     "smoke:studio": "node scripts/studio-smoke.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.112",
+    "@anthropic-ai/sdk": "^0.115",
     "discord.js": "^14"
   },
   "engines": {
