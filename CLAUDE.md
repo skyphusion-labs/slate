@@ -138,16 +138,20 @@ Conventional Commits; SemVer `0.MINOR.PATCH` pre-1.0. Release bumps root `packag
 
 ## Release / tagging
 
-**TAG-GATED Worker deploy.** `.github/workflows/deploy.yml` runs on pushed `v*` tags (and
-`workflow_dispatch`, but deploy steps require a `v*` ref). Merge to `main` does **not** redeploy
-`slate-search` / `slate-logs`.
+Three ship paths share the same SemVer cut (`package.json` + `CHANGELOG.md` `## vX.Y.Z` on `main`):
 
-Bot GHCR image: `image.yml` on `v*` tags.
+| Trigger | Workflow | Effect |
+|---------|----------|--------|
+| push `v*` tag | `deploy.yml` | Deploy slate-search + slate-logs Workers |
+| push `v*` tag | `image.yml` | Build/push bot GHCR image |
+| **GitHub Release published** on that tag | `publish-npm.yml` | Publish `@skyphusion/slate` to npm |
+
+Merge to `main` alone does **not** deploy Workers, push the image, or publish npm.
 
 ### Cut a release
 
-1. **Release PR on `main`:** bump `package.json` version, add `CHANGELOG.md` `## vX.Y.Z`, land PR.
-2. **Tag:**
+1. **Release PR on `main`:** bump root `package.json` version, add `CHANGELOG.md` `## vX.Y.Z`, land PR.
+2. **Tag** (must match `package.json`):
 
 ```bash
 git fetch origin main && git checkout main && git pull --ff-only
@@ -155,4 +159,11 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-3. Confirm `deploy.yml` green. Tag must be on `origin/main`.
+3. Confirm `deploy.yml` / `image.yml` green.
+4. **npm** (fires `publish-npm.yml`):
+
+```bash
+gh release create vX.Y.Z --title "vX.Y.Z" --generate-notes
+```
+
+Tag must be an ancestor of `origin/main`. npm version guard: release tag `vX.Y.Z` == `package.json` version `X.Y.Z`.

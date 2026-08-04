@@ -1,7 +1,7 @@
 {
-  "name": "slate",
+  "name": "@skyphusion/slate",
   "version": "0.5.5",
-  "private": true,
+  "private": false,
   "type": "module",
   "description": "Slate -- Vivijure Screenwriter's Assistant for Discord",
   "homepage": "https://vivijure.com",
@@ -22,7 +22,8 @@
     "bot": "node bot.mjs",
     "lint": "node --check bot.mjs",
     "test": "vitest run",
-    "smoke:studio": "node scripts/studio-smoke.mjs"
+    "smoke:studio": "node scripts/studio-smoke.mjs",
+    "prepublishOnly": "npm run lint && npm test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115",
@@ -34,5 +35,27 @@
   "devDependencies": {
     "@vitest/coverage-istanbul": "^4.1.10",
     "vitest": "^4.1.9"
-  }
+  },
+  "license": "AGPL-3.0-only",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "slate": "bot.mjs"
+  },
+  "files": [
+    "bot.mjs",
+    "lib.mjs",
+    "registry.mjs",
+    "studio.mjs",
+    "studio-api.mjs",
+    "contract.mjs",
+    "assets/**",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md",
+    "slate.env.example"
+  ]
 }
