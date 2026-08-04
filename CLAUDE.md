@@ -66,13 +66,13 @@ cd log-worker && npm run typecheck && npm run deploy
 `node --check bot.mjs` (`npm run lint`) is the bot gate. Workers typecheck separately. `npm test` runs
 `lib.test.ts`, `registry.test.ts`, and `contract.test.ts` (69-route zero-drift gate). `bot.test.ts`
 is a boot smoke against mocked env. CI: `ci.yml` lints bot + typechecks search-worker;
-`code-coverage.yml` runs Vitest; `deploy.yml` deploys Workers on green push to `main`. Bot image
-builds on `v*` tags (`image.yml`).
+`code-coverage.yml` runs Vitest. **`deploy.yml` deploys Workers only on a pushed `v*` tag**, not on
+a bare merge to `main` (main runs CI only). Bot image builds on `v*` tags (`image.yml`).
 
 ## Running (production)
 
-Bot runs as Docker on the stack host (tag-driven GHCR image). Workers deploy from CI on push to
-`main`. See README "Run your own Slate" and stacks/compose.prod.yml.
+Bot runs as Docker on the stack host (tag-driven GHCR image). Workers deploy from CI **only on a
+`v*` tag** (see Release / tagging). See README "Run your own Slate" and stacks/compose.prod.yml.
 
 ## Key architecture
 
@@ -133,4 +133,26 @@ use `skyphusion-<member>` identity, never Conrad's. Conrad devs only on his lapt
 
 ## Commits & versioning
 
-Conventional Commits; SemVer `0.MINOR.PATCH` pre-1.0. Release bumps `package.json` + `CHANGELOG.md`.
+Conventional Commits; SemVer `0.MINOR.PATCH` pre-1.0. Release bumps root `package.json` +
+`CHANGELOG.md`.
+
+## Release / tagging
+
+**TAG-GATED Worker deploy.** `.github/workflows/deploy.yml` runs on pushed `v*` tags (and
+`workflow_dispatch`, but deploy steps require a `v*` ref). Merge to `main` does **not** redeploy
+`slate-search` / `slate-logs`.
+
+Bot GHCR image: `image.yml` on `v*` tags.
+
+### Cut a release
+
+1. **Release PR on `main`:** bump `package.json` version, add `CHANGELOG.md` `## vX.Y.Z`, land PR.
+2. **Tag:**
+
+```bash
+git fetch origin main && git checkout main && git pull --ff-only
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+3. Confirm `deploy.yml` green. Tag must be on `origin/main`.
