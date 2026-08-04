@@ -6,6 +6,6 @@ import { describe, it, expect } from 'vitest';
 describe('Slate package surface', () => {
   it('exposes a package name', async () => {
     const pkg = await import('./package.json', { with: { type: 'json' } });
-    expect(pkg.default.name).toBe('slate');
+    expect(pkg.default.name).toBe('@skyphusion/slate');
   });
 });
