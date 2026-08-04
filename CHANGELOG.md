@@ -1,3 +1,7 @@
+## v0.5.5
+
+PATCH: dependency updates (undici, postcss, cloudflare toolchain, ip-address) and CLAUDE.md release-procedure correction on main. Tag deploys slate-search + slate-logs Workers. (package.json was behind tag v0.5.4; this realigns and ships the next cut.)
+
 ## v0.5.3
 
 PATCH: fix Worker deploy typecheck (exclude `*.test.ts`) so the v0.5.2 security wave can ship to Cloudflare.
