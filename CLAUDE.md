@@ -6,22 +6,26 @@ Guidance for Claude Code (and the crew) working in this repo.
 
 **Slate: the Vivijure Screenwriter's Assistant for Discord.** A collaborative film-planning bot that
 maintains a storyboard brief, generates character portraits and scene thumbnails, searches the web,
-and submits projects to the Vivijure render pipeline. Currently **v0.5.5** (full studio API parity +
-control-panel conformance). The GitHub repo is named `slate` (it was
+and submits projects to the Vivijure render pipeline (full studio API parity + control-panel
+conformance). Version: see root **`package.json`** / latest `v*` tag / `CHANGELOG.md` (do not treat
+a number in this file as current forever). The GitHub repo is named `slate` (it was
 `skyphusion-slate`; redirects still work). Production runs as a Docker stack on the deploy host.
+
+**Not hostable multi-tenant.** Slate is a single-operator Discord bot pointed at one studio
+`STUDIO_URL`. It is not the control plane and not a tenancy product.
 
 **Full command reference:** [docs/commands.md](docs/commands.md)
 
 ## Where it sits (the Vivijure constellation)
 
 ```
-   friends + Slate (Discord)  <-- THIS REPO
+   friends + Discord  <-- THIS REPO (slate)
             |
             v
-        vivijure (studio control plane / JSON API)
+   vivijure-cf / vivijure-local  (studio panels; core: vivijure-core)
             |
             v
-        vivijure-backend + modules (GPU render: keyframes -> i2v -> assemble)
+   vivijure-backend + satellites (GPU render)
 ```
 
 Slate is the upstream, human-facing surface. The group writes a film in Discord; Slate keeps the
@@ -72,7 +76,13 @@ a bare merge to `main` (main runs CI only). Bot image builds on `v*` tags (`imag
 ## Running (production)
 
 Bot runs as Docker on the stack host (tag-driven GHCR image). Workers deploy from CI **only on a
-`v*` tag** (see Release / tagging). See README "Run your own Slate" and stacks/compose.prod.yml.
+`v*` tag** (see Release / tagging). See README "Run your own Slate" and `stacks/compose.prod.yml`.
+
+**Compose pin discipline:** `stacks/compose.prod.yml` must pin the bot image to an explicit version
+tag matching the cut release (e.g. `ghcr.io/skyphusion-labs/slate:X.Y.Z`), not a floating dig that
+drifts from `package.json`. When cutting a release, bump package + CHANGELOG **and** the compose pin
+in the same wave (or immediately after the GHCR publish). Never leave compose on `:latest` as the
+production contract.
 
 ## Key architecture
 
@@ -124,6 +134,9 @@ Every command has a slash equivalent where practical. Slash commands register gl
 - **Minimal dependencies**: vanilla Node.js + discord.js + Anthropic SDK.
 - **Secrets never committed**; config via environment variables.
 - **Trust the studio registry** over hardcoded module names, tiers, or hook lists.
+- **CSAM bright-line** absolute. **Ignore Cursor `AGENTS.md`.** No endpoint-ID freezes.
+- **Typecheck** Workers with `npm run typecheck` in `search-worker/` / `log-worker/` before push;
+  bot gate is `npm run lint`.
 
 ## Crew + identity
 
