@@ -43,11 +43,11 @@ interface Env {
   TAVILY_API_KEY: string;
   /** Auth for /search (X-Search-Secret). */
   SEARCH_SECRET: string;
-  /** Auth for /knowledge/* — required, no SEARCH_SECRET fallback. */
+  /** Auth for /knowledge/* -- required, no SEARCH_SECRET fallback. */
   KNOWLEDGE_SECRET: string;
-  /** Auth for /fetch — required, no fallback (limits lateral movement). */
+  /** Auth for /fetch -- required, no fallback (limits lateral movement). */
   FETCH_SECRET: string;
-  /** Auth for /memory/* — required, no fallback (limits lateral movement). */
+  /** Auth for /memory/* -- required, no fallback (limits lateral movement). */
   MEMORY_SECRET: string;
   /** Optional comma-separated Discord channel IDs allowed for /memory/*. When set, others 403. */
   MEMORY_CHANNEL_ALLOWLIST?: string;
@@ -140,7 +140,7 @@ export default {
     if (req.method !== "POST") return err("Method not allowed", 405);
 
     if (!capabilitySecretsReady(env)) {
-      // Generic body — do not disclose which secret policy failed.
+      // Generic body -- do not disclose which secret policy failed.
       return err("Service Unavailable", 503);
     }
 
@@ -268,7 +268,7 @@ async function handleFetch(req: Request, env: Env): Promise<Response> {
     await page.setOfflineMode(true);
     await page.setRequestInterception(true);
     page.on("request", async (r) => {
-      // Always abort — never continue(). Offline setContent must not dial.
+      // Always abort -- never continue(). Offline setContent must not dial.
       try { await r.abort(); } catch { /* ignore */ }
     });
     await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 25_000 });

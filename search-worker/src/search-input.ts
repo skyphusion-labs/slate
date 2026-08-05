@@ -9,7 +9,7 @@ export function sanitizeSearchQuery(value: unknown): string | null {
   return cleaned;
 }
 
-/** Discord snowflake channel IDs (16–20 decimal digits; reject short/arbitrary tenants). */
+/** Discord snowflake channel IDs (16-20 decimal digits; reject short/arbitrary tenants). */
 export function isNonEmptyChannelId(value: unknown): value is string {
   return typeof value === "string" && /^\d{16,20}$/.test(value.trim());
 }

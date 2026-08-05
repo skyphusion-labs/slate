@@ -1,3 +1,7 @@
+## Unreleased
+
+- **chore:** strip em/en dashes from search-worker comments (style rule).
+
 ## v0.5.5
 
 PATCH: dependency updates (undici, postcss, cloudflare toolchain, ip-address) and CLAUDE.md release-procedure correction on main. Tag deploys slate-search + slate-logs Workers. (package.json was behind tag v0.5.4; this realigns and ships the next cut.)
