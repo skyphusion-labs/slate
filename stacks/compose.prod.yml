@@ -36,7 +36,7 @@
 
 services:
   slate:
-    image: ghcr.io/skyphusion-labs/slate:0.5.1
+    image: ghcr.io/skyphusion-labs/slate:0.5.5
     restart: unless-stopped
     read_only: true
     tmpfs:
