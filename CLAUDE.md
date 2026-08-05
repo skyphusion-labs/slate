@@ -6,7 +6,7 @@ Guidance for Claude Code (and the crew) working in this repo.
 
 **Slate: the Vivijure Screenwriter's Assistant for Discord.** A collaborative film-planning bot that
 maintains a storyboard brief, generates character portraits and scene thumbnails, searches the web,
-and submits projects to the Vivijure render pipeline. Currently **v0.3.0** (full studio API parity +
+and submits projects to the Vivijure render pipeline. Currently **v0.5.5** (full studio API parity +
 control-panel conformance). The GitHub repo is named `slate` (it was
 `skyphusion-slate`; redirects still work). Production runs as a Docker stack on the deploy host.
 
