@@ -2,13 +2,14 @@
 
 **Effective date:** 2026-06-14
 **Service:** Slate, a Discord application
-**Operator:** Conrad Rockenhaus (SkyPhusion), the operator of the official hosted instance.
+**Operator:** whoever runs an instance. Skyphusion Labs ships the code and does **not** operate Slate as a service (self-host only).
 
 By adding Slate to a Discord server, or by interacting with it in a channel or direct message, you
 agree to these Terms. If you do not agree, do not use Slate.
 
-Slate is open-source software (AGPL-3.0). Anyone may run their own instance; these Terms govern the
-SkyPhusion-operated instance. Operators of their own instances are responsible for their own terms.
+Slate is open-source software (AGPL-3.0). Anyone may run their own instance. These Terms are a reference template for operators;
+Skyphusion Labs does not run a public hosted instance. Operators of their own instances are
+responsible for their own terms.
 
 ## The service
 
