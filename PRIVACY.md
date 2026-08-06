@@ -2,12 +2,12 @@
 
 **Effective date:** 2026-06-14
 **Service:** Slate, a Discord application
-**Operator:** Conrad Rockenhaus (SkyPhusion), the operator of the official hosted instance.
+**Operator:** whoever runs an instance. Skyphusion Labs ships the code and does **not** operate Slate as a service (self-host only).
 
 This policy explains what data Slate processes, why, who it is shared with, and how long it is
 kept. Slate is open-source software (AGPL-3.0); anyone may run their own instance, in which case
-that operator is the data controller for their instance and this policy describes the
-SkyPhusion-operated instance.
+that operator is the data controller for their instance. This document is a reference policy
+for operators; Skyphusion Labs does not run a public hosted instance of this product.
 
 > The product-wide commitment this policy is written against is
 > [`PRIVACY-COMMITMENT.md`](PRIVACY-COMMITMENT.md), a pointer to the canonical copy at the
