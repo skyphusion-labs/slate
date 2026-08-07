@@ -1,8 +1,16 @@
+
+/** Strip trailing ASCII slashes without a regex (CodeQL js/polynomial-redos). */
+function trimTrailingSlashes(s) {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47) end--;
+  return end === s.length ? s : s.slice(0, end);
+}
+
 // studio.mjs
 // Complete Vivijure studio HTTP client (docs/CONTRACT.md). Slate is a thin projection client.
 
 function buildUrl(base, path, query) {
-  const url = new URL(base.replace(/\/+$/, '') + path);
+  const url = new URL(trimTrailingSlashes(base) + path);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
       if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
@@ -130,7 +138,7 @@ export const trainCastLora = (c, id, body = {}) =>
   studioPost(c.vivijureUrl, c.headers, `/api/cast/${encodeURIComponent(id)}/train-lora`, body);
 export const getCastLoraStatus = (c, id) =>
   studioGet(c.vivijureUrl, c.headers, `/api/cast/${encodeURIComponent(id)}/lora-status`);
-export const exportCastUrl = (c, id) => `${c.vivijureUrl.replace(/\/+$/, '')}/api/cast/export/${encodeURIComponent(id)}`;
+export const exportCastUrl = (c, id) => `${trimTrailingSlashes(c.vivijureUrl)}/api/cast/export/${encodeURIComponent(id)}`;
 export const importCast = (c, buffer) =>
   studioUploadBinary(c.vivijureUrl, c.headers, '/api/cast/import', buffer, 'application/x-tar');
 
@@ -143,7 +151,7 @@ export const uploadCharacterRef = (c, buffer, mime) =>
 export const uploadAudio = (c, buffer, mime) =>
   studioUploadBinary(c.vivijureUrl, c.headers, '/api/storyboard/audio-upload', buffer, mime);
 export const artifactUrl = (c, key) =>
-  `${c.vivijureUrl.replace(/\/+$/, '')}/api/artifact/${key.split('/').map(encodeURIComponent).join('/')}`;
+  `${trimTrailingSlashes(c.vivijureUrl)}/api/artifact/${key.split('/').map(encodeURIComponent).join('/')}`;
 
 // --- projects -----------------------------------------------------------------
 
