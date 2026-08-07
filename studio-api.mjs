@@ -15,7 +15,7 @@ import {
   applySubtitleToFilmFinish,
 } from './lib.mjs';
 
-/** Parse `key:value` pairs or JSON into an object. */
+/** Parse `key:value` pairs or JSON into an object. Manual scan (no polyredos regex). */
 export function parseApiArgs(raw) {
   const s = (raw ?? '').trim();
   if (!s) return {};
@@ -23,14 +23,37 @@ export function parseApiArgs(raw) {
     return JSON.parse(s);
   }
   const out = {};
-  const re = /(\w+):(?:"([^"]*)"|'([^']*)'|(\S+))/g;
-  let m;
-  while ((m = re.exec(s)) !== null) {
-    out[m[1]] = m[2] ?? m[3] ?? m[4];
+  let i = 0;
+  const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+  const isKey = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_';
+  while (i < s.length) {
+    while (i < s.length && isWs(s[i])) i++;
+    if (i >= s.length) break;
+    const keyStart = i;
+    while (i < s.length && isKey(s[i])) i++;
+    if (i === keyStart || s[i] !== ':') {
+      throw new Error('args must be JSON or key:value pairs (e.g. name:Wren bible:"a pilot")');
+    }
+    const key = s.slice(keyStart, i);
+    i++; // skip :
+    let val = '';
+    if (s[i] === '"' || s[i] === "'") {
+      const q = s[i++];
+      const vStart = i;
+      while (i < s.length && s[i] !== q) i++;
+      val = s.slice(vStart, i);
+      if (s[i] === q) i++;
+    } else {
+      const vStart = i;
+      while (i < s.length && !isWs(s[i])) i++;
+      val = s.slice(vStart, i);
+    }
+    out[key] = val;
   }
   if (Object.keys(out).length) return out;
   throw new Error('args must be JSON or key:value pairs (e.g. name:Wren bible:"a pilot")');
 }
+
 
 export function formatApiResult(res) {
   if (!res) return '(no response)';
