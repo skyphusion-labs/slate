@@ -1,6 +1,6 @@
-## Unreleased
+## v0.5.6
 
-- **chore:** strip em/en dashes from search-worker comments (style rule).
+PATCH: CodeQL polyredos on studio URL / parseApiArgs (#157); Cloudflare toolchain, @anthropic-ai/sdk, and puppeteer on main since v0.5.5. Tag deploys slate-search + slate-logs and rebuilds the GHCR bot image.
 
 ## v0.5.5
 
