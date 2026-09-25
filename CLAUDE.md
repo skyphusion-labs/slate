@@ -140,7 +140,7 @@ Every command has a slash equivalent where practical. Slash commands register gl
 
 ## Crew + identity
 
-Crew members work as their own Unix + gh identity (`sudo -u <member> bash -lc '...'`). Crew commits
+Crew members work as their own Unix + gh identity (`sudo -n -H -u <member> bash -lc '...'`). Crew commits
 use `skyphusion-<member>` identity, never Conrad's. Conrad devs only on his laptop
 (`Conrad Rockenhaus <conrad@skyphusion.org>`).
 
