@@ -381,3 +381,10 @@ export function buildCastContextBlock(brief, castCatalog = []) {
   lines.push('To reuse a trained character: /bind <slot> <name> (or just NAME them in the story -- an exact name match auto-binds at render). /unbind <slot> makes a fresh character instead.');
   return lines.join('\n');
 }
+
+// Command-dispatch predicate for the bare !render command. A bare startsWith('!render') also
+// swallows !renders, !rendertags, !renderpoll, !render-plan and !render-keyframes, so the match must
+// be the exact command or the command followed by whitespace.
+export function isRenderCommand(text) {
+  return /^!render(\s|$)/.test(text ?? '');
+}

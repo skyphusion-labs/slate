@@ -119,6 +119,7 @@ import {
   pickAutoMotionBackend,
   pickAutoBind,
   buildCastContextBlock,
+  isRenderCommand,
 } from './lib.mjs';
 import {
   commandAvailability,
@@ -3086,7 +3087,7 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
-  if (rawText.startsWith('!render') || rawText === '!ship') {
+  if (isRenderCommand(rawText) || rawText === '!ship') {
     const parts   = rawText.split(/\s+/);
     const project = await getProject(channelId);
     const rs      = ensureRenderSettings(project.brief);
