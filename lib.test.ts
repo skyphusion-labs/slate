@@ -15,6 +15,7 @@ import {
   pickAutoBind,
   buildCastContextBlock,
   buildStoryboardPayload,
+  isRenderCommand,
 } from './lib.mjs';
 
 // Real unit tests over the pure helpers extracted from bot.mjs. No Discord client, no network,
@@ -413,5 +414,24 @@ describe("buildStoryboardPayload dialogue shape (studio contract)", () => {
     expect(out).toMatchObject({ title: "My Film", full_prompt: "fp", style_prefix: "sp", style_category: "Noir", duration_seconds: 30, clip_seconds: 5 });
     expect(out.use_characters).toEqual(["A"]);
     expect(out.scenes[0]).toMatchObject({ id: "s1", prompt: "p", act: "I", character_slots: ["A"], target_seconds: 4 });
+  });
+});
+
+describe("isRenderCommand", () => {
+  it("matches the bare command and the command followed by whitespace-delimited args", () => {
+    expect(isRenderCommand("!render")).toBe(true);
+    expect(isRenderCommand("!render now")).toBe(true);
+    expect(isRenderCommand("!render draft")).toBe(true);
+    expect(isRenderCommand("!render\tfinal")).toBe(true);
+  });
+  it("does not match sibling commands that merely share the !render prefix", () => {
+    for (const t of ["!renders", "!renders 5", "!rendertags", "!renderpoll abc", "!render-plan", "!render-keyframes now", "!render-keyframes"]) {
+      expect(isRenderCommand(t), t).toBe(false);
+    }
+  });
+  it("does not match unrelated text", () => {
+    expect(isRenderCommand("render")).toBe(false);
+    expect(isRenderCommand("!ship")).toBe(false);
+    expect(isRenderCommand("")).toBe(false);
   });
 });
