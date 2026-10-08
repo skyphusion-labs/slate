@@ -112,6 +112,7 @@ import {
   buildStoryboardPayload,
   formatCastRoster,
   formatPreflightResult,
+  gatePreflight,
   mapModuleOverridesToFilmConfigs,
   applySubtitleToFilmFinish,
   resolveCastMember,
@@ -1464,10 +1465,8 @@ async function submitToVivijure(brief, opts = {}) {
 
   // Pre-render validation (#85): surface blockers before spend.
   if (!opts.skipPreflight) {
-    const pf = await runPreflight(brief, bundleKey).catch(() => null);
-    if (pf?.ok && pf.result && pf.result.ok === false) {
-      return { ok: false, error: formatPreflightResult(pf.result), preflight: pf.result };
-    }
+    const refusal = await gatePreflight(() => runPreflight(brief, bundleKey));
+    if (refusal) return refusal;
   }
 
   const registry = await fetchRegistry();

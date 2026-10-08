@@ -211,6 +211,16 @@ export function formatPreflightResult(result) {
   return lines.join('\n');
 }
 
+// Decide whether a paid render may start. `run` performs the preflight and resolves to
+// { ok, result } or { ok:false, error }. Returns null to proceed, or { ok:false, error } to refuse.
+export async function gatePreflight(run) {
+  const pf = await run().catch(() => null);
+  if (pf?.ok && pf.result && pf.result.ok === false) {
+    return { ok: false, error: formatPreflightResult(pf.result), preflight: pf.result };
+  }
+  return null;
+}
+
 // Storyboard payload for bundle / preflight (mirrors bot submit shape).
 export function buildStoryboardPayload(brief, characterRefs = {}) {
   const refSlots = new Set(Object.keys(characterRefs));
