@@ -211,6 +211,32 @@ export function formatPreflightResult(result) {
   return lines.join('\n');
 }
 
+// Decide whether a paid render may start. `run` performs the preflight and resolves to
+// { ok, result } or { ok:false, error }. Returns null to proceed, or { ok:false, error } to refuse.
+//
+// POLICY (slate#183, option C): this gate FAILS CLOSED. Only an explicit `result.ok === true`
+// proceeds. A preflight that says no, throws, times out, errors at the studio, or returns no verdict
+// refuses, because an unvalidated storyboard must never reach paid GPU. An unrun check is "could not
+// measure", never "passed". The character-ref step in bot.mjs (ensureCharacterRefs) is deliberately
+// the opposite: it fails OPEN with a notice, because a missing ref costs a worse render, not money.
+// Do not "simplify" the two to match. The operator override is opts.skipPreflight, applied by the caller.
+export async function gatePreflight(run) {
+  let pf;
+  try {
+    pf = await run();
+  } catch (e) {
+    return { ok: false, error: `I could not run the pre-render check (${e?.message || 'unknown error'}), so I did not start the render. Try again shortly.` };
+  }
+  if (!pf?.ok) {
+    return { ok: false, error: pf?.error || 'I could not run the pre-render check, so I did not start the render. Try again shortly.' };
+  }
+  if (pf.result?.ok !== true) {
+    if (pf.result?.ok === false) return { ok: false, error: formatPreflightResult(pf.result), preflight: pf.result };
+    return { ok: false, error: 'The pre-render check gave no clear answer, so I did not start the render. Try again shortly.' };
+  }
+  return null;
+}
+
 // Storyboard payload for bundle / preflight (mirrors bot submit shape).
 export function buildStoryboardPayload(brief, characterRefs = {}) {
   const refSlots = new Set(Object.keys(characterRefs));

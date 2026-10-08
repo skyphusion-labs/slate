@@ -112,6 +112,7 @@ import {
   buildStoryboardPayload,
   formatCastRoster,
   formatPreflightResult,
+  gatePreflight,
   mapModuleOverridesToFilmConfigs,
   applySubtitleToFilmFinish,
   resolveCastMember,
@@ -1464,10 +1465,8 @@ async function submitToVivijure(brief, opts = {}) {
 
   // Pre-render validation (#85): surface blockers before spend.
   if (!opts.skipPreflight) {
-    const pf = await runPreflight(brief, bundleKey).catch(() => null);
-    if (pf?.ok && pf.result && pf.result.ok === false) {
-      return { ok: false, error: formatPreflightResult(pf.result), preflight: pf.result };
-    }
+    const refusal = await gatePreflight(() => runPreflight(brief, bundleKey));
+    if (refusal) return refusal;
   }
 
   const registry = await fetchRegistry();
@@ -1767,7 +1766,18 @@ async function runSubmit(brief, channelId, quality, imageModel, say) {
     if (channelId) await saveProject(channelId).catch(() => {});
     await say(formatAutoBindNotice(autobind));
   }
-  const refs = await ensureCharacterRefs(brief, channelId, imageModel).catch(() => ({ ok: true, generated: [] }));
+  // POLICY (slate#183, option C): this step deliberately fails OPEN. A missing character ref makes a
+  // worse render, which can be redone, so we continue and tell the channel. The preflight gate in
+  // submitToVivijure fails CLOSED because that spend cannot be recovered. Do not make them match.
+  let refsFailed = false;
+  const refs = await ensureCharacterRefs(brief, channelId, imageModel).catch((e) => {
+    log(`[render] ensureCharacterRefs threw: ${e?.message}`);
+    refsFailed = true;
+    return { ok: true, generated: [] };
+  });
+  if (refsFailed) {
+    await say('Heads up -- I could not make the character looks just now, so this render may use less consistent characters. Sending it anyway...');
+  }
   if (!refs.ok) {
     await say(`Hold on -- ${refs.missing.join(' and ')} ${refs.missing.length > 1 ? "don't" : "doesn't"} have a look yet, and I can't render a character I can't picture. Describe them (or run \`/portrait\`) and I'll fold them in.`);
     return false;

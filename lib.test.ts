@@ -10,6 +10,7 @@ import {
   characterRefFromStudioMember,
   resolveCastMember,
   formatPreflightResult,
+  gatePreflight,
   matchBackend,
   pickAutoMotionBackend,
   pickAutoBind,
@@ -433,5 +434,46 @@ describe("isRenderCommand", () => {
     expect(isRenderCommand("render")).toBe(false);
     expect(isRenderCommand("!ship")).toBe(false);
     expect(isRenderCommand("")).toBe(false);
+  });
+});
+
+describe('gatePreflight (paid-render guard, slate#183)', () => {
+  const okResult = { ok: true, counts: { error: 0, warning: 0, info: 0 }, issues: [] };
+  const noResult = { ok: false, counts: { error: 1, warning: 0, info: 0 }, issues: [{ level: 'error', message: 'LoRA not ready' }] };
+
+  it('case 1: preflight ran and said NO -> refuse with the issues', async () => {
+    const r = await gatePreflight(async () => ({ ok: true, result: noResult }));
+    expect(r?.ok).toBe(false);
+    expect(r?.error).toContain('blocked');
+    expect(r?.preflight).toEqual(noResult);
+  });
+
+  it('case 2 (control): preflight ran and said YES -> proceed', async () => {
+    expect(await gatePreflight(async () => ({ ok: true, result: okResult }))).toBeNull();
+  });
+
+  it('case 3a: preflight call threw -> refuse', async () => {
+    const r = await gatePreflight(async () => { throw new Error('connect ECONNREFUSED'); });
+    expect(r?.ok).toBe(false);
+    expect(r?.error).toContain('did not start');
+  });
+
+  it('case 3b: preflight timed out (TimeoutError rejection) -> refuse', async () => {
+    const r = await gatePreflight(() => Promise.reject(Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' })));
+    expect(r?.ok).toBe(false);
+    expect(r?.error).toContain('did not start');
+  });
+
+  it('case 3c: studio answered with an error (5xx/401 shape) -> refuse with that error', async () => {
+    const r = await gatePreflight(async () => ({ ok: false, error: 'the studio hit a server error trying to run preflight (503).' }));
+    expect(r?.ok).toBe(false);
+    expect(r?.error).toContain('server error');
+  });
+
+  it('case 3d: preflight returned nothing or no verdict -> refuse', async () => {
+    expect((await gatePreflight(async () => null))?.ok).toBe(false);
+    expect((await gatePreflight(async () => undefined))?.ok).toBe(false);
+    expect((await gatePreflight(async () => ({ ok: true, result: {} })))?.ok).toBe(false);
+    expect((await gatePreflight(async () => ({ ok: true })))?.ok).toBe(false);
   });
 });
