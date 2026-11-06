@@ -240,6 +240,10 @@ Args format: `key:value` pairs or JSON. Examples:
 Brief-aware actions (`preflight`, `bundle`, `yaml`, `storyboard-render`, `film-submit`, etc.) use
 the current channel storyboard automatically.
 
+`film-submit` on a brief with keyframes-only mode on sends `POST /api/storyboard/render` with
+`keyframesOnly: true`, as `!render` does, because `/api/render/film` has no keyframes-only mode
+(slate#209).
+
 Full route list: 68 routes in Vivijure `docs/CONTRACT.md` section 2.1 plus control-panel supplements
 (69 total; see [CONTRACT-conformance.md](CONTRACT-conformance.md)). Upload routes use the
 attachment commands above; everything else is reachable via `!api` or the dedicated aliases in
