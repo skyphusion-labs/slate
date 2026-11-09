@@ -91,6 +91,22 @@ function filmScenes(brief) {
   }));
 }
 
+// slate#209: a keyframes-only brief goes to POST /api/storyboard/render with keyframesOnly, the door that
+// stops after keyframes. POST /api/render/film has no keyframes-only mode: it never read a
+// keyframes_only field, so this action used to start, and pay for, a full film. The bot's own render
+// path already reroutes the same way (bot.mjs, the keyframes-only reroute); this body mirrors that one.
+async function buildKeyframesOnlyBody(ctx, opts = {}) {
+  const { brief } = ctx;
+  const rs = brief.render_settings || ctx.emptyRenderSettings();
+  return {
+    bundleKey: opts.bundleKey ?? await briefBundleKey(ctx),
+    scenes: filmScenes(brief),
+    qualityTier: opts.quality ?? rs.quality_tier ?? 'draft',
+    castLoras: buildCastLoras(brief.cast_bindings),
+    keyframesOnly: true,
+  };
+}
+
 async function buildFilmBody(ctx, opts = {}) {
   const { brief } = ctx;
   const rs = brief.render_settings || ctx.emptyRenderSettings();
@@ -127,7 +143,6 @@ async function buildFilmBody(ctx, opts = {}) {
   if (Object.keys(filmFinish).length) body.film_finish_config = filmFinish;
   const castLoras = buildCastLoras(brief.cast_bindings);
   if (Object.keys(castLoras).length) body.cast_loras = castLoras;
-  if (rs.keyframes_only) body.keyframes_only = true;
   return body;
 }
 
@@ -315,8 +330,10 @@ export const STUDIO_ACTIONS = {
     },
   },
   'film-submit': {
-    help: 'POST /api/render/film (current brief)',
+    help: 'POST /api/render/film (current brief; a keyframes-only brief goes to /api/storyboard/render)',
     async run(ctx, a) {
+      const rs = ctx.brief.render_settings || ctx.emptyRenderSettings();
+      if (rs.keyframes_only) return studio.submitStoryboardRender(ctx.cfg, await buildKeyframesOnlyBody(ctx, a));
       return studio.submitFilm(ctx.cfg, await buildFilmBody(ctx, a));
     },
   },
