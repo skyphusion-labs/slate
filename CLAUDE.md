@@ -70,7 +70,7 @@ cd log-worker && npm run typecheck && npm run deploy
 `node --check bot.mjs` (`npm run lint`) is the bot gate. Workers typecheck separately. `npm test` (`vitest run`) covers
 `lib.test.ts`, `registry.test.ts`, `contract.test.ts` (69-route zero-drift gate), and `bot.test.ts`
 (boot smoke against mocked env), plus the other root `*.test.ts` files. CI: `ci.yml` lints the bot, runs that Vitest suite, and typechecks `search-worker` and `log-worker`.
-`coverage.yml` also runs `npm test` (the org `coverage` check). **`deploy.yml` deploys Workers only on a pushed `v*` tag**, not on
+`coverage.yml` is the required `coverage` context; it currently runs no tests (passthrough echo). The Vitest gate in CI is `ci.yml`. **`deploy.yml` deploys Workers only on a pushed `v*` tag**, not on
 a bare merge to `main` (main runs CI only). Bot image builds on `v*.*.*` tags (`image.yml`).
 
 ## Running (production)
