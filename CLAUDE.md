@@ -12,7 +12,7 @@ a number in this file as current forever). The GitHub repo is named `slate` (it 
 `skyphusion-slate`; redirects still work). Production runs as a Docker stack on the deploy host.
 
 **Not hostable multi-tenant.** Slate is a single-operator Discord bot pointed at one studio
-`STUDIO_URL`. It is not the control plane and not a tenancy product.
+`VIVIJURE_API_URL`. It is not the control plane and not a tenancy product.
 
 **Full command reference:** [docs/commands.md](docs/commands.md)
 
@@ -57,7 +57,7 @@ docs/CONTRACT-conformance.md  69-route API matrix (CI-enforced)
 
 ```bash
 npm run lint         # node --check bot.mjs -- CI gate for the bot
-npm run bot          # node bot.mjs (needs env from slate.env or stacks/.env)
+npm run bot          # node bot.mjs (process env only; ./run.sh sources slate.env)
 npm test             # vitest: lib + registry + contract conformance
 npm run smoke:studio # offline gate + optional live studio probes
 npx vitest run       # same as npm test
@@ -67,11 +67,11 @@ cd log-worker && npm run typecheck && npm run deploy
 
 ### Verifying changes
 
-`node --check bot.mjs` (`npm run lint`) is the bot gate. Workers typecheck separately. `npm test` runs
-`lib.test.ts`, `registry.test.ts`, and `contract.test.ts` (69-route zero-drift gate). `bot.test.ts`
-is a boot smoke against mocked env. CI: `ci.yml` lints bot + typechecks search-worker;
-`code-coverage.yml` runs Vitest. **`deploy.yml` deploys Workers only on a pushed `v*` tag**, not on
-a bare merge to `main` (main runs CI only). Bot image builds on `v*` tags (`image.yml`).
+`node --check bot.mjs` (`npm run lint`) is the bot gate. Workers typecheck separately. `npm test` (`vitest run`) covers
+`lib.test.ts`, `registry.test.ts`, `contract.test.ts` (69-route zero-drift gate), and `bot.test.ts`
+(boot smoke against mocked env), plus the other root `*.test.ts` files. CI: `ci.yml` lints the bot, runs that Vitest suite, and typechecks `search-worker` and `log-worker`.
+`coverage.yml` is the required `coverage` context; it currently runs no tests (passthrough echo). The Vitest gate in CI is `ci.yml`. **`deploy.yml` deploys Workers only on a pushed `v*` tag**, not on
+a bare merge to `main` (main runs CI only). Bot image builds on `v*.*.*` tags (`image.yml`).
 
 ## Running (production)
 
@@ -86,8 +86,7 @@ production contract.
 
 ## Key architecture
 
-- **Claude Sonnet via CF AI Gateway** (native Anthropic SDK). Falls back to ollama when
-  `CF_AIG_TOKEN` is unset.
+- **Chat model:** `bot.mjs` defaults `DISCORD_MODEL` to `qwen3.6:27b-ctx8k`. With `CF_AIG_TOKEN` unset, chat uses ollama at that id. With `CF_AIG_TOKEN` set, that same id is sent to Claude through the CF AI Gateway (native Anthropic SDK), so the Claude path needs a Claude model id. `stacks/compose.prod.yml` and `slate.env.example` default `DISCORD_MODEL` to `claude-sonnet-4-6`.
 - **Tool-use loop** (5 rounds max): web_search, research, fetch_page, search_knowledge,
   search_memory via slate-search Worker.
 - **Vision**: image attachments as base64 to Claude (ollama path strips to text).
@@ -156,7 +155,7 @@ Three ship paths share the same SemVer cut (`package.json` + `CHANGELOG.md` `## 
 | Trigger | Workflow | Effect |
 |---------|----------|--------|
 | push `v*` tag | `deploy.yml` | Deploy slate-search + slate-logs Workers |
-| push `v*` tag | `image.yml` | Build/push bot GHCR image |
+| push `v*.*.*` tag | `image.yml` | Build/push bot GHCR image |
 | **GitHub Release published** on that tag | `publish-npm.yml` | Publish `@skyphusion/slate` to npm |
 
 Merge to `main` alone does **not** deploy Workers, push the image, or publish npm.
