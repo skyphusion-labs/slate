@@ -4,7 +4,7 @@
   "private": false,
   "type": "module",
   "description": "Slate -- Vivijure Screenwriter's Assistant for Discord",
-  "homepage": "https://vivijure.com",
+  "homepage": "https://vivijure.dev",
   "repository": {
     "type": "git",
     "url": "https://github.com/skyphusion-labs/slate.git"
