@@ -234,7 +234,7 @@ Args format: `key:value` pairs or JSON. Examples:
 !api render-poll jobId:abc123
 !api module-config-get name:own-gpu
 !api enhance
-!api scatter shardCount:2
+!api scatter
 ```
 
 Brief-aware actions (`preflight`, `bundle`, `yaml`, `storyboard-render`, `film-submit`, etc.) use
@@ -243,6 +243,10 @@ the current channel storyboard automatically.
 `film-submit` on a brief with keyframes-only mode on sends `POST /api/storyboard/render` with
 `keyframesOnly: true`, as `!render` does, because `/api/render/film` has no keyframes-only mode
 (slate#209).
+
+`scatter` (`!scatter`, `!api scatter`) submits one film job on `POST /api/storyboard/render/scatter`.
+The studio accepts a shard count and ignores it (vivijure-cf CONTRACT 2.23, vivijure-cf#720), so
+Slate does not send one (slate#211).
 
 Full route list: 68 routes in Vivijure `docs/CONTRACT.md` section 2.1 plus control-panel supplements
 (69 total; see [CONTRACT-conformance.md](CONTRACT-conformance.md)). Upload routes use the
@@ -267,7 +271,7 @@ These bang aliases mirror the Vivijure web control panel without memorizing `!ap
 | `!chat` | POST `/api/chat` |
 | `!projects` | GET `/api/storyboard/projects` |
 | `!models` | GET `/api/storyboard/models` |
-| `!scatter [shardCount:N]` | POST `/api/storyboard/render/scatter` |
+| `!scatter` | POST `/api/storyboard/render/scatter` (one film job) |
 | `!storyboard-render` | POST `/api/storyboard/render` |
 | `!render-keyframes` | POST `/api/storyboard/render-from-keyframes` |
 | `!regen <render-id> <shot-id>` | POST `.../regen-shot` |
