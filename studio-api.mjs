@@ -312,14 +312,16 @@ export const STUDIO_ACTIONS = {
     },
   },
   'render-from-keyframes': { help: 'POST render-from-keyframes  args: bundleKey:', run: (ctx, a) => studio.submitRenderFromKeyframes(ctx.cfg, a) },
+  // vivijure-cf CONTRACT 2.23 (vivijure-cf#720) retired film scatter: the studio
+  // accepts shardCount and ignores it, and a submit is always one film-* job.
+  // Slate does not send the field, including when the caller passes one.
   scatter: {
-    help: 'POST scatter render  args: shardCount:2',
-    async run(ctx, a) {
+    help: 'POST one film-* job',
+    async run(ctx) {
       const rs = ctx.brief.render_settings || {};
       return studio.submitScatterRender(ctx.cfg, {
         bundleKey: await briefBundleKey(ctx),
         shotIds: ctx.brief.scenes.map((s) => s.id),
-        shardCount: a.shardCount ? Number(a.shardCount) : 2,
         qualityTier: rs.quality_tier || 'draft',
         castLoras: buildCastLoras(ctx.brief.cast_bindings),
         motion_backend: rs.motion_backend,
